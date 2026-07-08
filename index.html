@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script src="https://jsdelivr.net"></script>
+  
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0F766E">
@@ -1871,6 +1873,54 @@ function findColumn(rowKeys,aliases){
 }
 
 // ── INVENTORY UPLOAD ──
+// Database Login Configuration
+const supabaseUrl = 'https://supabase.co'; 
+const supabaseKey = 'sb_publishable_8QIwnCp3wBFcaEe5kfsPJQ_vGxZ5G4J'; 
+const supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
+
+// ENGINE 1: AUTOMATIC LOAD FROM DATABASE ON BOOT
+async function loadInventoryFromDatabase() {
+  try {
+    const { data, error } = await supabase.from('invos_store').select('*');
+    if (error) throw error;
+
+    if (data && data.length > 0) {
+      invUploadRows = data.map(dbRow => ({
+        name: dbRow.key,
+        cat: dbRow.org,
+        qty: dbRow.data?.qty || 1,
+        desc: dbRow.data?.desc || '',
+        emoji: dbRow.data?.emoji || '📦'
+      }));
+      if (typeof renderInvUploadPreview === 'function') {
+        renderInvUploadPreview();
+      }
+    }
+  } catch (err) {
+    console.error('Database failed to load:', err.message);
+  }
+}
+
+// ENGINE 2: AUTOMATIC SAVE TO DATABASE
+async function saveInventoryToDatabase(itemsArray) {
+  try {
+    const payload = itemsArray.map(item => ({
+      org: item.cat || 'General', 
+      key: item.name,             
+      data: { qty: item.qty, desc: item.desc, emoji: item.emoji },
+      updated_at: new Date().toISOString()
+    }));
+
+    const { error } = await supabase.from('invos_store').upsert(payload, { onConflict: 'org,key' }); 
+    if (error) throw error;
+    alert("💾 Inventory securely saved to your permanent cloud database!");
+  } catch (err) {
+    alert("❌ Cloud saving failed: " + err.message);
+  }
+}
+
+// Tell the app to fetch data from the cloud the second the page opens
+document.addEventListener('DOMContentLoaded', loadInventoryFromDatabase);
 let invUploadRows=[]; // parsed+mapped rows pending review
 async function handleInvFileUpload(e){
   const file=e.target.files[0]; if(!file)return;
@@ -1990,6 +2040,7 @@ document.getElementById('processPasteBtn').addEventListener('click', async () =>
     // 5. Fire your native screen rendering sequence engines
     if (statusEl) statusEl.textContent = `✅ Staged ${invUploadRows.length} item(s) from clipboard — review below, then Import.`;
     if (typeof renderInvUploadPreview === 'function') {
+     await saveInventoryToDatabase(invUploadRows);
       renderInvUploadPreview();
     }
 
