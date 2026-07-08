@@ -1155,6 +1155,9 @@ function elapsed(ms){ const s=Math.floor((Date.now()-ms)/1000); if(s<60)return s
 function avatarColor(str){ const h=['#0D9488','#D946EF','#6366F1','#F59E0B','#10B981','#EF4444','#8B5CF6','#EC4899']; let n=0; for(let c of str)n+=c.charCodeAt(0); return h[n%h.length]; }
 function initials(u){ const p=getUsers().find(x=>x.id===u); if(!p)return'?'; return((p.firstname||'')[0]||(p.username||'')[0]||'?').toUpperCase(); }
 
+// Initialize previewMode to prevent Uncaught ReferenceError
+let previewMode = false; 
+
 // Permission helpers — when previewMode is on, simulate 'worker' role
 function effectiveRole(){ return previewMode ? 'worker' : (CU?.role||'worker'); }
 function isMaster(){ return !previewMode && CU?.role==='master'; }
@@ -1168,6 +1171,7 @@ function canManageTempStaff(){ const r=effectiveRole(); return ['master','owner'
 function canDeclareAllHands(){ const r=effectiveRole(); return ['master','owner','supervisor'].includes(r); }
 function canDeleteItems(){ const r=effectiveRole(); return ['master','owner'].includes(r); }
 function canViewAll(){ return !previewMode; }
+
 // "Staff" = appears in shift roster / worker lists / clock in-out. Master and
 // Dispatcher accounts exist for app control / coordination but are not field staff.
 function isStaffRole(role){ return !['master','dispatcher'].includes(role); }
