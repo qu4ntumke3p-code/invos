@@ -1720,11 +1720,22 @@ function parseSpreadsheetFile(file){
       };
       reader.readAsText(file);
 
-    } else if(ext==='xlsx'||ext==='xls'){
-      if(typeof XLSX==='undefined'||window.__xlsxLoadFailed){
-        reject(new Error('Excel support failed to load (no internet access?). Please export your file as CSV and try again.'));
-        return;
+  } else if(ext==='xlsx'||ext==='xls'){
+      if(typeof XLSX==='undefined'){
+        try {
+          await new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = "https://jsdelivr.net";
+            script.onload = resolve;
+            script.onerror = reject;
+            document.head.appendChild(script);
+          });
+        } catch(e) {
+          reject(new Error('Excel support failed to load (no internet access?). Please export your file as CSV and try again.'));
+          return;
+        }
       }
+
       reader.onload=e=>{
         try{
           const data=new Uint8Array(e.target.result);
