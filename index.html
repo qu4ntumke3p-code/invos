@@ -1,9 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<script src="https://jsdelivr.net"></script>
-<script>window.__xlsxLoadFailed = false;</script>
-<script src="https://jsdelivr.net"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0F766E">
@@ -11,6 +8,16 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js" onerror="window.__mammothLoadFailed=true;"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+:root{
+  --teal:#0D9488;--tealD:#0F766E;--tealL:#2DD4BF;--tealBg:#F0FDFA;--tealMid:#CCFBF1;
+  --mag:#D946EF;--magD:#A21CAF;--magBg:#FDF4FF;
+  --ok:#10B981;--warn:#F59E0B;--err:#EF4444;--dev:#6366F1;
+  --g50:#F8FAFC;--g100:#F1F5F9;--g200:#E2E8F0;--g300:#CBD5E1;
+  --g400:#94A3B8;--g600:#475569;--g700:#334155;--g800:#1E293B;
+  --radius:14px;--font:'Segoe UI',system-ui,-apple-system,sans-serif;
+}
+body,html{width:100%;height:100%;overflow:hidden;background:var(--g50);font-family:var(--font);}
+
 :root{
   --teal:#0D9488;--tealD:#0F766E;--tealL:#2DD4BF;--tealBg:#F0FDFA;--tealMid:#CCFBF1;
   --mag:#D946EF;--magD:#A21CAF;--magBg:#FDF4FF;
@@ -1923,6 +1930,76 @@ function renderInvUploadPreview(){
     div.appendChild(rb);
     wrap.appendChild(div);
   });
+  // HANDLES DIRECT CLIPBOARD TEXT INJECTION
+document.getElementById('processPasteBtn').addEventListener('click', async () => {
+  const txt = document.getElementById('pasteBox').value.trim();
+  const statusEl = document.getElementById('inv-upload-status') || $('inv-upload-status');
+  const previewEl = document.getElementById('inv-upload-preview') || $('inv-upload-preview');
+  
+  if (!txt) {
+    alert('Please paste some text data first!');
+    return;
+  }
+
+  if (statusEl) statusEl.textContent = '📄 Parsing clipboard text data...';
+  if (previewEl) previewEl.innerHTML = '';
+
+  try {
+    let raw = [];
+
+    // 1. Detect if the user pasted a raw JSON string loop array
+    if (txt.startsWith('[') && txt.endsWith(']')) {
+      raw = JSON.parse(txt);
+    } else {
+      // 2. Feed the text directly into your application's native freeform text rules
+      raw = parseFreeformText(txt);
+    }
+
+    if (!raw.length) {
+      if (statusEl) statusEl.textContent = '⚠️ No data fields recognized in text block.';
+      return;
+    }
+
+    // 3. Match keys using your app's built-in column normalization maps
+    const keys = Object.keys(raw[0] || {});
+    const nameCol = findColumn(keys, ['item name','name','item','equipment','equipment name','Name']);
+    const catCol = findColumn(keys, ['category','cat','type']);
+    const qtyCol = findColumn(keys, ['quantity','qty','total qty','count','amount']);
+    const lowCol = findColumn(keys, ['low stock','low at','reorder at','min qty','minimum']);
+    const descCol = findColumn(keys, ['description','desc','notes','note']);
+    const emojiCol = findColumn(keys, ['emoji','icon']);
+
+    // 4. Map records into staging state array variable
+    invUploadRows = raw.map(r => {
+      const fallbackName = r['Name'] || Object.values(r)[0] || '';
+      return {
+        name: nameCol ? r[nameCol] : fallbackName,
+        cat: normalizeCategory(catCol ? r[catCol] : ''),
+        qty: qtyCol ? (parseInt(r[qtyCol], 10) || 1) : 1,
+        lowAt: lowCol ? (parseInt(r[lowCol], 10) || 2) : 2,
+        desc: descCol ? r[descCol] : '',
+        emoji: emojiCol ? r[emojiCol] : '📦'
+      };
+    }).filter(r => r.name);
+
+    if (!invUploadRows.length) {
+      if (statusEl) statusEl.innerHTML = '⚠️ Couldn\'t extract rows. Verify your text block has item names.';
+      return;
+    }
+
+    // 5. Fire your native screen rendering sequence engines
+    if (statusEl) statusEl.textContent = `✅ Staged ${invUploadRows.length} item(s) from clipboard — review below, then Import.`;
+    if (typeof renderInvUploadPreview === 'function') {
+      renderInvUploadPreview();
+    }
+
+    document.getElementById('pasteBox').value = ''; // clear input layout box
+
+  } catch (err) {
+    if (statusEl) statusEl.textContent = '⚠️ ' + (err.message || 'Clipboard extraction configuration parsing breakdown.');
+  }
+});
+
   const importBtn=el('button','btn btn-tl btn-full mt-12',`✅ Import ${invUploadRows.length} Item(s)`);
   importBtn.onclick=commitInvUpload;
   wrap.appendChild(importBtn);
@@ -3836,5 +3913,12 @@ try{
 }catch(e){ console.error('Photo input binding failed:',e); }
 
 </script>
+  <!-- PASTE INTERFACE INFRASTRUCTURE BLOCK -->
+<div style="margin: 20px; padding: 15px; border: 1px dashed #ccc; border-radius: 8px; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+  <label style="display:block; margin-bottom:8px; font-weight:bold; color: #333;">📋 Copy & Paste Inventory:</label>
+  <textarea id="pasteBox" rows="5" style="width:100%; padding:10px; border-radius:4px; border:1px solid #ccc; font-family:inherit;" placeholder="Paste columns directly from Word, Notes, or your JSON array here..."></textarea>
+  <button id="processPasteBtn" style="margin-top:10px; padding:8px 16px; background:#0D9488; color:white; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">Process Clipboard Text</button>
+</div>
+
 </body>
 </html>
