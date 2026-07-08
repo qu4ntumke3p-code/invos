@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <script src="https://jsdelivr.net"></script>
+<script>window.__xlsxLoadFailed = false;</script>
+<script src="https://jsdelivr.net"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0F766E">
@@ -1720,18 +1722,9 @@ function parseSpreadsheetFile(file){
       };
       reader.readAsText(file);
 
- } else if(ext==='xlsx'||ext==='xls'){
+} else if(ext==='xlsx'||ext==='xls'){
       if(typeof XLSX==='undefined'){
-        const script = document.createElement('script');
-        script.src = "https://jsdelivr.net";
-        script.onload = () => {
-          // Library successfully loaded dynamically, continue processing file
-          console.log("Excel parser loaded successfully.");
-        };
-        script.onerror = () => {
-          reject(new Error('Excel support failed to load (no internet access?). Please export your file as CSV and try again.'));
-        };
-        document.head.appendChild(script);
+        reject(new Error('Excel support failed to load. Please export your file as CSV and try again.'));
         return;
       }
 
