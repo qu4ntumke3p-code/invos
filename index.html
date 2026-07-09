@@ -613,7 +613,10 @@ input[type="file"].styled-file-input::file-selector-button{
     <div class="sec-lbl mt-12">Item Details</div>
     <div class="form-row"><label class="form-lbl">Item Name *</label><input class="field" id="ai-name" placeholder="e.g. Impact Wrench"></div>
     <div class="form-row"><label class="form-lbl">Category *</label>
-      <select class="field" id="ai-cat"><option>Tools</option><option>PPE</option><option>Electronics</option><option>Audio</option><option>Video</option><option>Comms</option><option>Safety</option><option>Vehicles</option><option>Other</option></select>
+      <select class="field" id="ai-cat" onchange="updateSubcatOptions('ai')"><option>Tools</option><option>PPE</option><option>Electronics</option><option>Audio</option><option>Video</option><option>Comms</option><option>Safety</option><option>Vehicles</option><option>Other</option></select>
+    </div>
+    <div class="form-row" id="ai-subcat-row" style="display:none;"><label class="form-lbl">Subcategory</label>
+      <select class="field" id="ai-subcat"></select>
     </div>
     <div class="form-row"><label class="form-lbl">Emoji Icon</label><input class="field" id="ai-emoji" placeholder="e.g. 🔩" maxlength="4"></div>
     <div class="form-row"><label class="form-lbl">Total Quantity *</label><input class="field" id="ai-qty" type="number" min="1" value="1"></div>
@@ -631,7 +634,10 @@ input[type="file"].styled-file-input::file-selector-button{
     <input type="hidden" id="ei-id">
     <div class="form-row"><label class="form-lbl">Item Name *</label><input class="field" id="ei-name"></div>
     <div class="form-row"><label class="form-lbl">Category *</label>
-      <select class="field" id="ei-cat"><option>Tools</option><option>PPE</option><option>Electronics</option><option>Audio</option><option>Video</option><option>Comms</option><option>Safety</option><option>Vehicles</option><option>Other</option></select>
+      <select class="field" id="ei-cat" onchange="updateSubcatOptions('ei')"><option>Tools</option><option>PPE</option><option>Electronics</option><option>Audio</option><option>Video</option><option>Comms</option><option>Safety</option><option>Vehicles</option><option>Other</option></select>
+    </div>
+    <div class="form-row" id="ei-subcat-row" style="display:none;"><label class="form-lbl">Subcategory</label>
+      <select class="field" id="ei-subcat"></select>
     </div>
     <div class="form-row"><label class="form-lbl">Emoji Icon</label><input class="field" id="ei-emoji" maxlength="4"></div>
     <div class="form-row"><label class="form-lbl">Total Quantity *</label><input class="field" id="ei-qty" type="number" min="0"></div>
@@ -1200,7 +1206,7 @@ function initDialogButtons(){} // no-op — native dialogs need no setup
 
 function openSheet(id){
   $(id).classList.add('open');
-  if(id==='sh-add-item') renderQuickAddPills();
+  if(id==='sh-add-item'){ renderQuickAddPills(); updateSubcatOptions('ai'); }
 }
 function closeSheet(id){
   $(id).classList.remove('open');
@@ -1547,6 +1553,32 @@ function roleLabel(r){ const m={master:'Master Dev',owner:'Owner',supervisor:'Su
 let invCat='All';
 const cats=['All','Tools','PPE','Electronics','Audio','Video','Comms','Safety','Vehicles','Other'];
 
+// Subcategories — only these three categories have them; everything else has none.
+const SUBCATS={
+  'Audio':['Speakers','Microphones','Mixers & Consoles','Amplifiers','DI Boxes','Wireless Systems','Cables & Snakes','Monitors','Other Audio'],
+  'Video':['Projectors','Screens','LED Walls','Cameras','Tripods & Mounts','Switchers & Scalers','Cables & Adapters','Other Video'],
+  'Electronics':['Cables','Power & Extension','Chargers & Batteries','Networking','Lighting Electronics','Other Electronics']
+};
+// Populates/shows or hides a subcategory <select> based on the paired category <select>'s value.
+// prefix is 'ai' (Add Item) or 'ei' (Edit Item); presetValue optionally pre-selects a subcat.
+function updateSubcatOptions(prefix,presetValue){
+  const catVal=$(prefix+'-cat').value;
+  const row=$(prefix+'-subcat-row');
+  const sel=$(prefix+'-subcat');
+  const opts=SUBCATS[catVal];
+  if(!opts){
+    row.style.display='none';
+    sel.innerHTML='';
+    return;
+  }
+  row.style.display='';
+  sel.innerHTML='<option value="">— None —</option>'+opts.map(o=>`<option ${o===presetValue?'selected':''}>${o}</option>`).join('');
+  if(presetValue&&!opts.includes(presetValue)){
+    // Preserve a subcat value that doesn't match the list (e.g. from an older import) as a custom option
+    sel.innerHTML+=`<option selected>${presetValue}</option>`;
+  }
+}
+
 function renderInv(){
   // Category pills
   const cp=$('cat-pills'); cp.innerHTML='';
@@ -1560,7 +1592,7 @@ function renderInv(){
 
   const q=($('inv-search')?.value||'').toLowerCase();
   const allOrgItems=getInv().filter(x=>x.org===CU?.org);
-  const inv=allOrgItems.filter(x=>(invCat==='All'||x.cat===invCat)&&(x.name.toLowerCase().includes(q)||x.cat.toLowerCase().includes(q)));
+  const inv=allOrgItems.filter(x=>(invCat==='All'||x.cat===invCat)&&(x.name.toLowerCase().includes(q)||x.cat.toLowerCase().includes(q)||(x.subcat||'').toLowerCase().includes(q)));
   const list=$('inv-list'); list.innerHTML='';
   if(!inv.length){
     if(allOrgItems.length===0){
@@ -1585,7 +1617,7 @@ function itemCard(item){
       <div class="item-emoji">${item.emoji||'📦'}</div>
       <div class="item-info">
         <div class="item-name">${item.name}</div>
-        <div class="item-meta">${item.cat}${item.desc?' · '+item.desc:''}</div>
+        <div class="item-meta">${item.cat}${item.subcat?' — '+item.subcat:''}${item.desc?' · '+item.desc:''}</div>
         <div class="item-chips">
           ${statusChip(item.status||'ok')}
           ${isLow?'<span class="chip chip-wn">Low Stock</span>':''}
@@ -1631,20 +1663,20 @@ const quickAddPresets=[
   {name:'Ladder',cat:'Tools',emoji:'🪜'},
   {name:'Toolbox',cat:'Tools',emoji:'🧰'},
   {name:'Flashlight',cat:'Tools',emoji:'🔦'},
-  {name:'Extension Cord',cat:'Electronics',emoji:'🔌'},
-  {name:'Generator',cat:'Electronics',emoji:'⚡'},
-  {name:'PA Speaker',cat:'Audio',emoji:'🔊'},
-  {name:'Wireless Microphone',cat:'Audio',emoji:'🎤'},
-  {name:'Mixing Desk',cat:'Audio',emoji:'🎚️'},
-  {name:'DI Box',cat:'Audio',emoji:'📦'},
-  {name:'XLR Cable',cat:'Audio',emoji:'🔗'},
-  {name:'Subwoofer',cat:'Audio',emoji:'🔊'},
-  {name:'Projector',cat:'Video',emoji:'📽️'},
-  {name:'Projection Screen',cat:'Video',emoji:'🖥️'},
-  {name:'LED Video Wall Panel',cat:'Video',emoji:'🟦'},
-  {name:'Camera',cat:'Video',emoji:'📷'},
-  {name:'Camera Tripod',cat:'Video',emoji:'📐'},
-  {name:'HDMI Cable',cat:'Video',emoji:'🔗'},
+  {name:'Extension Cord',cat:'Electronics',subcat:'Power & Extension',emoji:'🔌'},
+  {name:'Generator',cat:'Electronics',subcat:'Power & Extension',emoji:'⚡'},
+  {name:'PA Speaker',cat:'Audio',subcat:'Speakers',emoji:'🔊'},
+  {name:'Wireless Microphone',cat:'Audio',subcat:'Microphones',emoji:'🎤'},
+  {name:'Mixing Desk',cat:'Audio',subcat:'Mixers & Consoles',emoji:'🎚️'},
+  {name:'DI Box',cat:'Audio',subcat:'DI Boxes',emoji:'📦'},
+  {name:'XLR Cable',cat:'Audio',subcat:'Cables & Snakes',emoji:'🔗'},
+  {name:'Subwoofer',cat:'Audio',subcat:'Speakers',emoji:'🔊'},
+  {name:'Projector',cat:'Video',subcat:'Projectors',emoji:'📽️'},
+  {name:'Projection Screen',cat:'Video',subcat:'Screens',emoji:'🖥️'},
+  {name:'LED Video Wall Panel',cat:'Video',subcat:'LED Walls',emoji:'🟦'},
+  {name:'Camera',cat:'Video',subcat:'Cameras',emoji:'📷'},
+  {name:'Camera Tripod',cat:'Video',subcat:'Tripods & Mounts',emoji:'📐'},
+  {name:'HDMI Cable',cat:'Video',subcat:'Cables & Adapters',emoji:'🔗'},
   {name:'Radio / Walkie-Talkie',cat:'Comms',emoji:'📻'},
   {name:'Two-Way Headset',cat:'Comms',emoji:'🎧'},
   {name:'Traffic Cone',cat:'Safety',emoji:'🚧'},
@@ -1662,6 +1694,7 @@ function renderQuickAddPills(){
       $('ai-name').value=p.name;
       $('ai-cat').value=p.cat;
       $('ai-emoji').value=p.emoji;
+      updateSubcatOptions('ai',p.subcat||'');
       toast(`Loaded: ${p.name} — adjust qty & save`);
     };
     wrap.appendChild(b);
@@ -1673,11 +1706,13 @@ function addItem(){
   if(!canManageInv()){toast('⛔ No permission.');return;}
   const name=$('ai-name').value.trim(); if(!name){toast('Item name required.');return;}
   const qty=parseInt($('ai-qty').value)||1;
-  const item={id:'itm_'+uid(),name,cat:$('ai-cat').value,emoji:$('ai-emoji').value||'📦',qty,checkedOut:0,lowAt:parseInt($('ai-low').value)||2,status:'ok',desc:$('ai-desc').value.trim(),org:CU.org};
+  const subcat=(SUBCATS[$('ai-cat').value]?$('ai-subcat').value:'')||'';
+  const item={id:'itm_'+uid(),name,cat:$('ai-cat').value,subcat,emoji:$('ai-emoji').value||'📦',qty,checkedOut:0,lowAt:parseInt($('ai-low').value)||2,status:'ok',desc:$('ai-desc').value.trim(),org:CU.org};
   const inv=getInv(); inv.push(item); saveInv(inv);
-  addLog('inv',`Added: ${name}`,`Qty: ${qty}, Cat: ${item.cat}`);
+  addLog('inv',`Added: ${name}`,`Qty: ${qty}, Cat: ${item.cat}${subcat?' — '+subcat:''}`);
   toast('✅ Item added!'); closeSheet('sh-add-item');
   $('ai-name').value=''; $('ai-emoji').value=''; $('ai-desc').value=''; $('ai-qty').value=1;
+  updateSubcatOptions('ai');
   renderInv(); renderDashboard();
 }
 
@@ -1860,10 +1895,12 @@ async function handleInvFileUpload(e){
     const lowCol=findColumn(keys,['low stock','low at','reorder at','min qty','minimum']);
     const descCol=findColumn(keys,['description','desc','notes','note']);
     const emojiCol=findColumn(keys,['emoji','icon']);
+    const subcatCol=findColumn(keys,['subcategory','sub category','subcat','sub-category','sub cat']);
 
     invUploadRows=raw.map(r=>({
       name:nameCol?r[nameCol]:'',
       cat:normalizeCategory(catCol?r[catCol]:''),
+      subcat:subcatCol?r[subcatCol]:'',
       qty:qtyCol?(parseInt(r[qtyCol])||1):1,
       lowAt:lowCol?(parseInt(r[lowCol])||2):2,
       desc:descCol?r[descCol]:'',
@@ -1913,7 +1950,7 @@ function commitInvUpload(){
   if(!invUploadRows.length){toast('Nothing to import.');return;}
   const inv=getInv();
   invUploadRows.forEach(row=>{
-    inv.push({id:'itm_'+uid(),name:row.name,cat:row.cat,emoji:row.emoji||'📦',qty:row.qty||1,checkedOut:0,lowAt:row.lowAt||2,status:'ok',desc:row.desc||'',org:CU.org});
+    inv.push({id:'itm_'+uid(),name:row.name,cat:row.cat,subcat:row.subcat||'',emoji:row.emoji||'📦',qty:row.qty||1,checkedOut:0,lowAt:row.lowAt||2,status:'ok',desc:row.desc||'',org:CU.org});
   });
   saveInv(inv);
   addLog('inv',`Imported ${invUploadRows.length} item(s) from file`,`By ${CU.firstname||CU.username}`);
@@ -1927,12 +1964,13 @@ function openEditItem(id){
   const item=getInv().find(x=>x.id===id); if(!item)return;
   $('ei-id').value=id; $('ei-name').value=item.name; $('ei-cat').value=item.cat;
   $('ei-emoji').value=item.emoji||''; $('ei-qty').value=item.qty; $('ei-low').value=item.lowAt||2; $('ei-desc').value=item.desc||'';
-  const db=$('ei-cat').querySelector(`option[value="${item.cat}"]`); // just set
+  updateSubcatOptions('ei',item.subcat||'');
   openSheet('sh-edit-item');
 }
 function saveEditItem(){
   const id=$('ei-id').value; const inv=getInv(); const i=inv.findIndex(x=>x.id===id); if(i<0)return;
-  inv[i]={...inv[i],name:$('ei-name').value.trim(),cat:$('ei-cat').value,emoji:$('ei-emoji').value||'📦',qty:parseInt($('ei-qty').value)||0,lowAt:parseInt($('ei-low').value)||2,desc:$('ei-desc').value.trim()};
+  const subcat=(SUBCATS[$('ei-cat').value]?$('ei-subcat').value:'')||'';
+  inv[i]={...inv[i],name:$('ei-name').value.trim(),cat:$('ei-cat').value,subcat,emoji:$('ei-emoji').value||'📦',qty:parseInt($('ei-qty').value)||0,lowAt:parseInt($('ei-low').value)||2,desc:$('ei-desc').value.trim()};
   saveInv(inv); addLog('inv',`Edited: ${inv[i].name}`,'Item details updated.'); toast('✅ Saved!'); closeSheet('sh-edit-item'); renderInv(); renderDashboard();
 }
 function deleteItem(){
