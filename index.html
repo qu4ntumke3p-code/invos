@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#0F766E">
 <title>InvOS · Quantum Keep</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js" onerror="window.__mammothLoadFailed=true;"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" onerror="window.__xlsxLoadFailed=true;"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
 :root{
@@ -896,6 +897,7 @@ const SB_REST=`${SB_URL}/rest/v1/invos_store`;
 let sbReady=false;
 let memStore={};
 let storageBlocked=false;
+let CU=null; // currently signed-in user object
 
 function initSupabase(){
   sbReady=typeof fetch!=='undefined';
@@ -1154,6 +1156,9 @@ function fmtDate(ms){ if(!ms)return''; const d=new Date(ms); return d.toLocaleDa
 function elapsed(ms){ const s=Math.floor((Date.now()-ms)/1000); if(s<60)return s+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago'; }
 function avatarColor(str){ const h=['#0D9488','#D946EF','#6366F1','#F59E0B','#10B981','#EF4444','#8B5CF6','#EC4899']; let n=0; for(let c of str)n+=c.charCodeAt(0); return h[n%h.length]; }
 function initials(u){ const p=getUsers().find(x=>x.id===u); if(!p)return'?'; return((p.firstname||'')[0]||(p.username||'')[0]||'?').toUpperCase(); }
+
+// Tracks whether Master is currently previewing the app as a regular worker
+let previewMode = false;
 
 // Permission helpers — when previewMode is on, simulate 'worker' role
 function effectiveRole(){ return previewMode ? 'worker' : (CU?.role||'worker'); }
