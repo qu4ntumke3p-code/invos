@@ -613,7 +613,7 @@ input[type="file"].styled-file-input::file-selector-button{
     <div class="sec-lbl mt-12">Item Details</div>
     <div class="form-row"><label class="form-lbl">Item Name *</label><input class="field" id="ai-name" placeholder="e.g. Impact Wrench"></div>
     <div class="form-row"><label class="form-lbl">Category *</label>
-      <select class="field" id="ai-cat"><option>Tools</option><option>PPE</option><option>Electronics</option><option>Comms</option><option>Safety</option><option>Vehicles</option><option>Other</option></select>
+      <select class="field" id="ai-cat"><option>Tools</option><option>PPE</option><option>Electronics</option><option>Audio</option><option>Video</option><option>Comms</option><option>Safety</option><option>Vehicles</option><option>Other</option></select>
     </div>
     <div class="form-row"><label class="form-lbl">Emoji Icon</label><input class="field" id="ai-emoji" placeholder="e.g. 🔩" maxlength="4"></div>
     <div class="form-row"><label class="form-lbl">Total Quantity *</label><input class="field" id="ai-qty" type="number" min="1" value="1"></div>
@@ -631,7 +631,7 @@ input[type="file"].styled-file-input::file-selector-button{
     <input type="hidden" id="ei-id">
     <div class="form-row"><label class="form-lbl">Item Name *</label><input class="field" id="ei-name"></div>
     <div class="form-row"><label class="form-lbl">Category *</label>
-      <select class="field" id="ei-cat"><option>Tools</option><option>PPE</option><option>Electronics</option><option>Comms</option><option>Safety</option><option>Vehicles</option><option>Other</option></select>
+      <select class="field" id="ei-cat"><option>Tools</option><option>PPE</option><option>Electronics</option><option>Audio</option><option>Video</option><option>Comms</option><option>Safety</option><option>Vehicles</option><option>Other</option></select>
     </div>
     <div class="form-row"><label class="form-lbl">Emoji Icon</label><input class="field" id="ei-emoji" maxlength="4"></div>
     <div class="form-row"><label class="form-lbl">Total Quantity *</label><input class="field" id="ei-qty" type="number" min="0"></div>
@@ -1545,7 +1545,7 @@ function roleLabel(r){ const m={master:'Master Dev',owner:'Owner',supervisor:'Su
 //  INVENTORY
 // ══════════════════════════════════════════════════════════════
 let invCat='All';
-const cats=['All','Tools','PPE','Electronics','Comms','Safety','Vehicles','Other'];
+const cats=['All','Tools','PPE','Electronics','Audio','Video','Comms','Safety','Vehicles','Other'];
 
 function renderInv(){
   // Category pills
@@ -1633,6 +1633,18 @@ const quickAddPresets=[
   {name:'Flashlight',cat:'Tools',emoji:'🔦'},
   {name:'Extension Cord',cat:'Electronics',emoji:'🔌'},
   {name:'Generator',cat:'Electronics',emoji:'⚡'},
+  {name:'PA Speaker',cat:'Audio',emoji:'🔊'},
+  {name:'Wireless Microphone',cat:'Audio',emoji:'🎤'},
+  {name:'Mixing Desk',cat:'Audio',emoji:'🎚️'},
+  {name:'DI Box',cat:'Audio',emoji:'📦'},
+  {name:'XLR Cable',cat:'Audio',emoji:'🔗'},
+  {name:'Subwoofer',cat:'Audio',emoji:'🔊'},
+  {name:'Projector',cat:'Video',emoji:'📽️'},
+  {name:'Projection Screen',cat:'Video',emoji:'🖥️'},
+  {name:'LED Video Wall Panel',cat:'Video',emoji:'🟦'},
+  {name:'Camera',cat:'Video',emoji:'📷'},
+  {name:'Camera Tripod',cat:'Video',emoji:'📐'},
+  {name:'HDMI Cable',cat:'Video',emoji:'🔗'},
   {name:'Radio / Walkie-Talkie',cat:'Comms',emoji:'📻'},
   {name:'Two-Way Headset',cat:'Comms',emoji:'🎧'},
   {name:'Traffic Cone',cat:'Safety',emoji:'🚧'},
@@ -1869,7 +1881,7 @@ async function handleInvFileUpload(e){
   }
 }
 function normalizeCategory(c){
-  const valid=['Tools','PPE','Electronics','Comms','Safety','Vehicles','Other'];
+  const valid=['Tools','PPE','Electronics','Audio','Video','Comms','Safety','Vehicles','Other'];
   const norm=String(c||'').trim().toLowerCase();
   const match=valid.find(v=>v.toLowerCase()===norm);
   return match||(norm?'Other':'Tools');
@@ -1882,7 +1894,7 @@ function renderInvUploadPreview(){
       <div class="form-row" style="margin-bottom:6px;"><input class="field" value="${escAttr(row.name)}" oninput="invUploadRows[${i}].name=this.value" placeholder="Item name"></div>
       <div style="display:flex;gap:6px;">
         <select class="field" style="flex:1;" onchange="invUploadRows[${i}].cat=this.value">
-          ${['Tools','PPE','Electronics','Comms','Safety','Vehicles','Other'].map(c=>`<option ${row.cat===c?'selected':''}>${c}</option>`).join('')}
+          ${['Tools','PPE','Electronics','Audio','Video','Comms','Safety','Vehicles','Other'].map(c=>`<option ${row.cat===c?'selected':''}>${c}</option>`).join('')}
         </select>
         <input class="field" type="number" min="0" style="width:80px;" value="${row.qty}" oninput="invUploadRows[${i}].qty=parseInt(this.value)||0">
       </div>`;
