@@ -481,6 +481,7 @@ input[type="file"].styled-file-input::file-selector-button{
           <div id="clock-shift-label" style="opacity:.65;font-size:11px;font-weight:600;letter-spacing:.04em;margin-bottom:12px;"></div>
           <button class="btn" id="clock-btn" onclick="toggleClock()" style="font-size:15px;padding:12px 32px;border-radius:99px;background:rgba(255,255,255,.2);color:#fff;border:2px solid rgba(255,255,255,.5);">🟢 Clock In</button>
           <div id="clock-status" style="margin-top:8px;opacity:.72;font-size:12px;"></div>
+          <button class="btn btn-subtle btn-sm mt-12" onclick="openQuickStatus('')" style="background:rgba(255,255,255,.16);color:#fff;border:1.5px solid rgba(255,255,255,.4);">📣 Send Status Update</button>
         </div>
         <div id="shift-content" style="margin-top:14px;"></div>
         <div id="shift-mgr-row" style="margin-top:10px;display:none;">
@@ -555,6 +556,10 @@ input[type="file"].styled-file-input::file-selector-button{
       <div class="card" id="p-pro-card">
         <div class="sec-lbl">Professional Info</div>
         <div id="p-pro-info"></div>
+      </div>
+      <div class="card" id="staff-visibility-card" style="display:none;">
+        <div class="sec-lbl">Team Visibility</div>
+        <div id="staff-visibility-toggle"></div>
       </div>
       <div class="card" id="notif-card">
         <div class="sec-lbl">Notifications</div>
@@ -787,6 +792,9 @@ input[type="file"].styled-file-input::file-selector-button{
     </div>
 
     <div class="divider"></div>
+    <button class="btn btn-mg btn-full" onclick="openQuickStatus(jcCurrentJobId)">📣 Quick Status Update</button>
+
+    <div class="divider"></div>
     <div class="flex jc-between ic-center" style="margin-bottom:8px;">
       <div class="sec-lbl" style="margin:0;">✅ Equipment Checklist</div>
       <button class="btn btn-subtle btn-sm" onclick="addChecklistItemPrompt()">+ Add</button>
@@ -806,6 +814,19 @@ input[type="file"].styled-file-input::file-selector-button{
       <button class="btn btn-danger btn-sm" onclick="openIncidentReport()">+ Report Issue</button>
     </div>
     <div id="jc-incident-list"></div>
+  </div>
+</div>
+
+<!-- Quick Status Update -->
+<div class="overlay" id="sh-quick-status" onclick="closeByOverlay(event,'sh-quick-status')">
+  <div class="sheet">
+    <div class="sheet-hdr"><span class="sheet-title">Quick Status Update</span><button class="sheet-close" onclick="closeSheet('sh-quick-status')">✕</button></div>
+    <div class="form-row" id="qs-job-row">
+      <label class="form-lbl">Job</label>
+      <select class="field" id="qs-job-select"></select>
+    </div>
+    <div class="text-xs text-muted mt-4" style="margin-bottom:10px;">Tap one to notify your team instantly.</div>
+    <div style="display:flex;flex-direction:column;gap:8px;" id="qs-buttons"></div>
   </div>
 </div>
 
@@ -1126,7 +1147,7 @@ function bootstrap(){
     const shifts4=getShifts();
     let changed=false;
     users4.forEach(u=>{
-      if(isStaffRole(u.role)&&!u.shiftType){
+      if(actsAsStaff(u)&&!u.shiftType){
         const s=shifts4.find(x=>x.userId===u.id);
         u.shiftType=(s&&/after|even|night/i.test(s.shift))?'evening':'morning';
         changed=true;
@@ -1178,7 +1199,11 @@ function canViewAll(){ return !previewMode; }
 // "Staff" = appears in shift roster / worker lists / clock in-out. Master and
 // Dispatcher accounts exist for app control / coordination but are not field staff.
 function isStaffRole(role){ return !['master','dispatcher'].includes(role); }
-function isStaffUser(u){ return u && isStaffRole(u.role) && u.kind!=='temp'; }
+// Master/Dispatcher can opt in (via their own profile toggle) to show up in team
+// rosters and the shift schedule as if they were staff — purely a visibility choice,
+// it does not touch their actual role or permissions anywhere else in the app.
+function actsAsStaff(u){ return !!u && u.kind!=='temp' && (isStaffRole(u.role)||!!u.appearAsStaff); }
+function isStaffUser(u){ return actsAsStaff(u); }
 
 // ══════════════════════════════════════════════════════════════
 //  UI HELPERS
@@ -2105,8 +2130,36 @@ function startClock(){
     const d=new Date();
     $('clock-time').textContent=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     $('clock-date').textContent=d.toLocaleDateString([],{weekday:'long',month:'short',day:'numeric'});
+    if(d.getSeconds()===0) checkClockReminders();
   }
-  tick(); clockInterval=setInterval(tick,1000);
+  tick(); checkClockReminders(); clockInterval=setInterval(tick,1000);
+}
+
+// Gentle nudge if a staff member (or opted-in Master/Dispatcher) hasn't clocked
+// in shortly after their shift started, or hasn't clocked out shortly after it
+// ended. Fires at most once per condition per day, stored per-user/per-date.
+function checkClockReminders(){
+  if(!CU||!actsAsStaff(CU)) return;
+  const flagKey='iq_clock_reminder_'+CU.id+'_'+today();
+  const flags=LS.get(flagKey)||{};
+  const myShift=getShifts().find(s=>s.userId===CU.id&&s.date===today());
+  const now=new Date();
+  const nowHour=now.getHours()+now.getMinutes()/60;
+  const isEvening=CU.shiftType==='evening';
+  const startHour=isEvening?EVENING_START_HOUR:MORNING_START_HOUR;
+  const endHour=isEvening?EVENING_END_HOUR:MORNING_END_HOUR;
+  const GRACE=0.25; // 15 minutes
+  let changed=false;
+
+  if(!flags.clockInReminded&&nowHour>=startHour+GRACE&&nowHour<endHour&&(!myShift||!myShift.clockIn)){
+    toast(`⏰ Your ${isEvening?'evening':'morning'} shift started — don't forget to clock in!`,5000);
+    flags.clockInReminded=true; changed=true;
+  }
+  if(!flags.clockOutReminded&&nowHour>=endHour+GRACE&&myShift&&myShift.clockIn&&!myShift.clockOut){
+    toast(`⏰ Your shift ended a while ago — don't forget to clock out!`,5000);
+    flags.clockOutReminded=true; changed=true;
+  }
+  if(changed) LS.set(flagKey,flags);
 }
 
 function toggleClock(){
@@ -2130,6 +2183,12 @@ function toggleClock(){
     $('clock-status').textContent=`Shift: ${Math.floor(dur/60)}h ${dur%60}m`;
     addLog('shift',`${CU.firstname||CU.username} clocked out`,`Duration: ${Math.floor(dur/60)}h ${dur%60}m`);
     toast('🔴 Clocked out!');
+
+    // Gentle nudge — remind them to return any equipment still checked out
+    const myActiveCos=getCOs().filter(c=>c.org===CU.org&&c.userId===CU.id&&!c.returnedAt);
+    if(myActiveCos.length){
+      setTimeout(()=>toast(`📦 You still have ${myActiveCos.length} item(s) checked out — don't forget to return them.`,6000),1200);
+    }
 
     // OT is anything past the scheduled end of YOUR shift type.
     // Morning: 7AM–3PM (8hrs). Evening: 1PM–9PM (8hrs).
@@ -2161,7 +2220,7 @@ function toggleClock(){
 }
 
 function renderShifts(){
-  const isStaff=isStaffRole(CU?.role||'worker');
+  const isStaff=actsAsStaff(CU);
   const clockSection=$('clock-card');
   const myShift=getShifts().find(s=>s.userId===CU.id&&s.date===today());
   const btn=$('clock-btn');
@@ -2423,7 +2482,7 @@ function getOffDayRequest(userId,weekKey){
 // Core resolver: what is this worker's status on this date?
 // Returns one of: 'workday' | 'offday' | 'oncall' | 'allhands'
 function resolveDayStatus(user,dateStr){
-  if(!user||!isStaffRole(user.role)) return 'n/a';
+  if(!user||!actsAsStaff(user)) return 'n/a';
   const dow=dayOfWeek(dateStr); // 0 Sun .. 6 Sat
   const isWeekend=(dow===0||dow===6);
   const allHands=getAllHandsJobsForDate(dateStr).length>0;
@@ -2466,7 +2525,7 @@ function weekDatesOf(dateStr){
 
 function renderScheduleTab(){
   const wrap=$('schedule-content'); wrap.innerHTML='';
-  const isStaff=isStaffRole(CU?.role||'worker');
+  const isStaff=actsAsStaff(CU);
   const canApprove=canManageShifts(); // supervisor/owner/master/dispatcher
 
   if(isStaff){
@@ -2483,7 +2542,7 @@ function renderScheduleTab(){
     }
 
     wrap.appendChild(el('div','sec-lbl mt-16','👥 Team Overtime & Owed Days'));
-    const staffList=getUsers().filter(u=>u.org===CU.org&&isStaffRole(u.role));
+    const staffList=getUsers().filter(u=>u.org===CU.org&&actsAsStaff(u));
     staffList.forEach(u=>wrap.appendChild(buildLedgerSummaryCard(u,true)));
   }
 }
@@ -2751,7 +2810,7 @@ function saveJob(){
 // When a job is flagged All Hands, walk each day of the job range and credit
 // an owed-day to any staff member whose normal off/on-call day is being disrupted.
 function applyAllHandsDisruption(startDate,endDate,jobName){
-  const staff=getUsers().filter(u=>u.org===CU.org&&isStaffRole(u.role));
+  const staff=getUsers().filter(u=>u.org===CU.org&&actsAsStaff(u));
   const s=new Date(startDate+'T00:00:00');
   const e=new Date(endDate+'T00:00:00');
   let days=0;
@@ -3053,7 +3112,7 @@ function renderJobChecklistSheet(){
     if(job.endTime){
       const [h]=job.endTime.split(':').map(Number);
       if(h>=MORNING_END_HOUR){
-        const eveningStaff=getUsers().filter(u=>u.org===CU?.org&&isStaffRole(u.role)&&u.shiftType==='evening');
+        const eveningStaff=getUsers().filter(u=>u.org===CU?.org&&actsAsStaff(u)&&u.shiftType==='evening');
         if(eveningStaff.length){
           handoffWarning=`<div class="text-xs mt-4" style="color:var(--teal);">🔄 This job extends into evening hours — if morning crew finishes past 15:00, evening shift will be recorded as relieving.</div>`;
         }
@@ -3211,12 +3270,12 @@ function evaluateHandoff(job,actualEndDate){
   if(eveningConflict) return null;
 
   // Check evening-shift staff are available
-  const eveningStaff=getUsers().filter(u=>u.org===CU?.org&&isStaffRole(u.role)&&u.shiftType==='evening');
+  const eveningStaff=getUsers().filter(u=>u.org===CU?.org&&actsAsStaff(u)&&u.shiftType==='evening');
   if(!eveningStaff.length) return null;
 
   // Calculate how long morning ran past their end and credit OT
   const morningOverrunMinutes=Math.round((actualHour-MORNING_END_HOUR)*60);
-  const morningStaff=getUsers().filter(u=>u.org===CU?.org&&isStaffRole(u.role)&&u.shiftType==='morning');
+  const morningStaff=getUsers().filter(u=>u.org===CU?.org&&actsAsStaff(u)&&u.shiftType==='morning');
   morningStaff.forEach(u=>{
     if(morningOverrunMinutes>0){
       updateUserLedger(u.id,cur=>{ cur.otMinutes=(cur.otMinutes||0)+morningOverrunMinutes; },
@@ -3235,6 +3294,64 @@ function evaluateHandoff(job,actualEndDate){
       ? 'Job was scheduled to end during evening hours — planned handoff.'
       : `Job ran ${morningOverrunMinutes}m past morning end — evening crew relieved.`
   };
+}
+
+// ══════════════════════════════════════════════════════════════
+//  QUICK STATUS UPDATES — one-tap notifications to the team
+// ══════════════════════════════════════════════════════════════
+const QUICK_STATUS_TYPES=[
+  {k:'location',emoji:'📍',label:'On Location',prompt:false,urgent:false},
+  {k:'setup',emoji:'🔧',label:'Setup Complete',prompt:false,urgent:false},
+  {k:'breakdown',emoji:'📦',label:'Breakdown Complete',prompt:false,urgent:false},
+  {k:'finished',emoji:'✅',label:'Job Finished',prompt:false,urgent:false},
+  {k:'early',emoji:'⏱',label:'Finishing Early',prompt:true,urgent:false},
+  {k:'challenge',emoji:'⚠️',label:'Encountering Challenges',prompt:true,urgent:true},
+  {k:'assist',emoji:'🆘',label:'Need Assistance',prompt:true,urgent:true}
+];
+let qsJobId='';
+function openQuickStatus(jobId){
+  qsJobId=jobId||'';
+  const jobRow=$('qs-job-row');
+  if(jobId){
+    // Opened from a specific job's checklist — lock the job, no picker needed
+    jobRow.style.display='none';
+  } else {
+    jobRow.style.display='';
+    const jobs=getJobsForDate(today());
+    const sel=$('qs-job-select');
+    sel.innerHTML='<option value="">General (no specific job)</option>'+jobs.map(j=>`<option value="${j.id}">${j.name}</option>`).join('');
+    sel.onchange=()=>{ qsJobId=sel.value; };
+    qsJobId='';
+  }
+  renderQuickStatusButtons();
+  openSheet('sh-quick-status');
+}
+function renderQuickStatusButtons(){
+  const wrap=$('qs-buttons'); wrap.innerHTML='';
+  QUICK_STATUS_TYPES.forEach(t=>{
+    const b=el('button','btn '+(t.urgent?'btn-danger':'btn-subtle')+' btn-full',`${t.emoji} ${t.label}`);
+    b.style.justifyContent='flex-start';
+    b.onclick=()=>sendQuickStatus(t);
+    wrap.appendChild(b);
+  });
+}
+async function sendQuickStatus(t){
+  let note='';
+  if(t.prompt){
+    const res=await iqPrompt('Add a quick note (optional):','',t.label);
+    if(res===null) return; // cancelled
+    note=res.trim();
+  }
+  const job=qsJobId?getJobs().find(j=>j.id===qsJobId):null;
+  const who=CU.firstname||CU.username;
+  const jobTag=job?` — ${job.name}`:'';
+  const title=`${t.emoji} ${t.label}${jobTag}`;
+  const detail=`${who}${note?': '+note:''}`;
+  addAlert(t.urgent?'status':'shift',title,detail,null);
+  addLog('shift',`${t.label}${jobTag}`,`${who}${note?' — '+note:''}`);
+  updateBadges();
+  toast(`✅ Sent: ${t.label}`);
+  closeSheet('sh-quick-status');
 }
 
 function openIncidentReport(){
@@ -3511,6 +3628,31 @@ function renderProfile(){
   }
   const so=el('button','btn btn-danger btn-sm','Sign Out'); so.onclick=signOut; pa.appendChild(so);
 
+  // Staff visibility toggle — Master/Dispatcher only, doesn't affect permissions
+  const svCard=$('staff-visibility-card');
+  if(CU&&!isStaffRole(CU.role)){
+    svCard.style.display='';
+    const svWrap=$('staff-visibility-toggle'); svWrap.innerHTML='';
+    const on=!!CU.appearAsStaff;
+    const row=el('div','toggle-row');
+    row.innerHTML=`<div><div class="toggle-label">Appear as Team Member</div><div class="toggle-sub">Full staff experience — roster, clock in/out, off-day requests, overtime ledger, and handoffs. Your ${roleLabel(CU.role)} permissions stay exactly the same.</div></div>`;
+    const t=el('button','toggle'+(on?' on':'')); t.innerHTML='<div class="toggle-thumb"></div>';
+    t.onclick=()=>{ const v=!t.classList.contains('on'); t.classList.toggle('on',v); CU.appearAsStaff=v; updateUser(CU); toast(v?'✅ Now visible in team roster':'Hidden from team roster'); renderProfile(); if(curPage==='shifts') renderShifts(); };
+    row.appendChild(t); svWrap.appendChild(row);
+
+    if(on){
+      const shiftRow=el('div','form-row mt-8');
+      shiftRow.innerHTML=`<label class="form-lbl">My Shift Type</label>`;
+      const sel=el('select','field');
+      ['morning','evening'].forEach(s=>{ const o=el('option'); o.value=s; o.textContent=s==='morning'?'Morning (7AM–3PM)':'Evening (1PM–9PM)'; o.selected=(CU.shiftType||'morning')===s; sel.appendChild(o); });
+      sel.onchange=()=>{ CU.shiftType=sel.value; updateUser(CU); toast('✅ Shift type updated'); if(curPage==='shifts') renderShifts(); };
+      shiftRow.appendChild(sel);
+      svWrap.appendChild(shiftRow);
+    }
+  } else {
+    svCard.style.display='none';
+  }
+
   // Notif toggles
   const nt=$('notif-toggles'); nt.innerHTML='';
   const notifDefs=[{k:'lowStock',l:'Low Stock Alerts',s:'Notify when items run low'},{k:'damaged',l:'Damaged Item Alerts',s:'Notify on status changes'},{k:'shift',l:'Shift Reminders',s:'Clock in/out reminders'}];
@@ -3606,7 +3748,7 @@ function openManageTeam(){
     const div=el('div','worker-card');
     const color=avatarColor(u.id);
     div.innerHTML=`<div class="worker-av" style="background:${color};">${u.photo?`<img src="${u.photo}">`:(u.firstname?.[0]||u.username?.[0]||'?').toUpperCase()}</div>
-      <div class="worker-info"><div class="worker-name">${u.firstname||u.username} ${u.lastname||''}</div><div class="worker-role">${roleLabel(u.role)} · @${u.username}${!isStaffRole(u.role)?' · Not field staff':''}</div></div>`;
+      <div class="worker-info"><div class="worker-name">${u.firstname||u.username} ${u.lastname||''}</div><div class="worker-role">${roleLabel(u.role)} · @${u.username}${!actsAsStaff(u)?' · Not field staff':''}</div></div>`;
     if(canManageWorkers()&&!isMasterUser(u)){
       const mb=el('button','btn btn-subtle btn-sm','Edit'); mb.onclick=()=>openEditUser(u.id); div.appendChild(mb);
     }
