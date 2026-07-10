@@ -314,6 +314,9 @@ input[type="file"].styled-file-input::file-selector-button{
 
 /* Preview mode banner */
 #preview-banner{display:none;position:fixed;top:0;left:0;right:0;background:var(--warn);color:#fff;font-size:12px;font-weight:700;text-align:center;padding:7px;z-index:9000;cursor:pointer;}
+#offline-banner{display:none;position:fixed;top:0;left:0;right:0;background:var(--g700);color:#fff;font-size:12px;font-weight:700;text-align:center;padding:7px;z-index:8999;}
+#offline-banner.show{display:block;}
+#preview-banner.show ~ #offline-banner.show{top:33px;}
 #preview-banner.show{display:block;}
 </style>
 </head>
@@ -328,6 +331,7 @@ input[type="file"].styled-file-input::file-selector-button{
 
 <!-- PREVIEW BANNER -->
 <div id="preview-banner" onclick="exitPreview()">👁 Previewing as Regular Member — Tap to exit</div>
+<div id="offline-banner"></div>
 
 <!-- AUTH -->
 <div id="auth-screen">
@@ -594,7 +598,7 @@ input[type="file"].styled-file-input::file-selector-button{
   <div class="ai-sheet">
     <div class="ai-header">
       <div class="ai-orb">🤖</div>
-      <div><div class="ai-title">InvOS Assistant</div><div class="ai-sub">Ask me anything — inventory, shifts, or general questions.</div></div>
+      <div><div class="ai-title">InvOS Assistant</div><div class="ai-sub">Troubleshooting, inventory, shifts, or anything else — I remember what I research, so it works offline next time.</div></div>
       <button style="margin-left:auto;width:30px;height:30px;border-radius:8px;border:none;background:var(--g100);color:var(--g600);font-size:14px;cursor:pointer;" onclick="closeAI()">✕</button>
     </div>
     <div class="ai-msgs" id="ai-msgs"></div>
@@ -750,7 +754,13 @@ input[type="file"].styled-file-input::file-selector-button{
       <div class="form-row" style="flex:1;margin:0;"><label class="form-lbl">Daily End Time</label><input class="field" id="job-end" type="time"></div>
     </div>
     <div class="form-row"><label class="form-lbl">Location *</label><input class="field" id="job-location" placeholder="Venue / address"></div>
-    <div class="form-row"><label class="form-lbl">Equipment Needed</label><textarea class="field" id="job-equipment" placeholder="e.g. 2x PA Speaker, 6x Mic, 1x Mixing Desk" style="min-height:60px;resize:vertical;"></textarea></div>
+    <div class="form-row">
+      <label class="form-lbl">Equipment Needed (from inventory)</label>
+      <div class="search-wrap" style="margin:0 0 8px;"><span class="search-icon">🔍</span><input class="field" id="job-eq-search" placeholder="Search inventory to add…" oninput="renderJobEquipmentPicker()"></div>
+      <div id="job-eq-list" style="max-height:180px;overflow-y:auto;border:1.5px solid var(--g200);border-radius:10px;padding:6px;"></div>
+      <div id="job-eq-selected" class="mt-8"></div>
+    </div>
+    <div class="form-row"><label class="form-lbl">Additional Equipment Notes (optional)</label><textarea class="field" id="job-equipment" placeholder="Anything not in inventory, or extra detail" style="min-height:44px;resize:vertical;"></textarea></div>
     <div class="form-row"><label class="form-lbl">Crew Assigned</label><input class="field" id="job-crew" placeholder="e.g. Fabian, Shamar, + 1 temp"></div>
     <div class="form-row"><label class="form-lbl">Notes</label><input class="field" id="job-notes" placeholder="Anything else the crew should know"></div>
     <div class="card wn" style="margin-bottom:14px;">
@@ -801,6 +811,7 @@ input[type="file"].styled-file-input::file-selector-button{
     </div>
     <div id="jc-checklist-list"></div>
     <div id="jc-checklist-empty" class="empty" style="display:none;"><div class="empty-icon">📋</div><div class="empty-text">No checklist items yet</div></div>
+    <div id="jc-setup-confirm" class="mt-8"></div>
 
     <div class="divider"></div>
     <div id="jc-end-section" class="card mg">
@@ -926,9 +937,61 @@ function initSupabase(){
   sbReady=typeof fetch!=='undefined';
 }
 
+// ── Offline sync queue ──
+// If a push fails (no connection, DNS blocked, etc.) the write already
+// succeeded locally (LS.set already ran in sbSave before this is called) —
+// we just remember which keys still need to reach the cloud, and retry
+// automatically the moment the browser reports it's back online, plus
+// periodically as a backup in case the 'online' event doesn't fire reliably.
+function getPendingSync(){ return LS.get('iq_pending_sync')||{}; }
+function markPendingSync(key,org){
+  const p=getPendingSync(); p[key]=org; LS.set('iq_pending_sync',p);
+  updateSyncBadge();
+}
+function clearPendingSync(key){
+  const p=getPendingSync(); if(p[key]!==undefined){ delete p[key]; LS.set('iq_pending_sync',p); }
+  updateSyncBadge();
+}
+async function flushPendingSync(){
+  if(!navigator.onLine) return;
+  const p=getPendingSync();
+  const keys=Object.keys(p);
+  if(!keys.length) return;
+  for(const key of keys){
+    const org=p[key];
+    const value=LS.get(key);
+    if(value===null||value===undefined){ clearPendingSync(key); continue; }
+    try{
+      const resp=await fetch(SB_REST,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Prefer':'resolution=merge-duplicates,return=minimal'},
+        body:JSON.stringify({org,key,data:value,updated_at:new Date().toISOString()})
+      });
+      if(resp.ok) clearPendingSync(key);
+    }catch(e){ /* still offline or still blocked — leave queued, try again later */ }
+  }
+}
+function updateSyncBadge(){
+  const banner=$('offline-banner'); if(!banner) return;
+  const pendingCount=Object.keys(getPendingSync()).length;
+  if(!navigator.onLine){
+    banner.textContent='📡 Offline — your changes are saved and will sync automatically once you\'re back online';
+    banner.classList.add('show');
+  } else if(pendingCount>0){
+    banner.textContent=`🔄 Syncing ${pendingCount} change(s) to the cloud…`;
+    banner.classList.add('show');
+  } else {
+    banner.classList.remove('show');
+  }
+}
+window.addEventListener('online',()=>{ updateSyncBadge(); flushPendingSync(); });
+window.addEventListener('offline',()=>{ updateSyncBadge(); });
+setInterval(flushPendingSync,15000); // backup retry in case the online event is missed
+
 // Upsert a single key for an org — fire and forget
 async function sbPush(key, value, org){
   if(!sbReady||!org) return;
+  if(!navigator.onLine){ markPendingSync(key,org); return; }
   try{
     const resp=await fetch(SB_REST,{
       method:'POST',
@@ -940,8 +1003,9 @@ async function sbPush(key, value, org){
       },
       body:JSON.stringify({org,key,data:value,updated_at:new Date().toISOString()})
     });
-    if(!resp.ok){ const t=await resp.text().catch(()=>''); console.warn('sbPush',resp.status,t.slice(0,80)); }
-  }catch(e){ console.warn('sbPush error:',key,e.message); }
+    if(!resp.ok){ const t=await resp.text().catch(()=>''); console.warn('sbPush',resp.status,t.slice(0,80)); markPendingSync(key,org); }
+    else { clearPendingSync(key); }
+  }catch(e){ console.warn('sbPush error:',key,e.message); markPendingSync(key,org); }
 }
 
 // Pull every key for an org and hydrate local cache
@@ -2754,6 +2818,58 @@ function setShiftsSubtab(tab){
   if(tab==='schedule') renderScheduleTab();
 }
 
+// ══════════════════════════════════════════════════════════════
+//  JOB EQUIPMENT PICKER — selecting real inventory items for a job,
+//  which then seeds the job checklist and drives automatic checkout
+//  when setup is confirmed.
+// ══════════════════════════════════════════════════════════════
+const jobEqPickerState={items:new Map()}; // itemId -> qty
+function resetJobEqPicker(){ jobEqPickerState.items=new Map(); $('job-eq-search').value=''; renderJobEquipmentPicker(); }
+function loadJobEqPicker(job){
+  jobEqPickerState.items=new Map();
+  (job.equipmentItems||[]).forEach(ei=>jobEqPickerState.items.set(ei.itemId,ei.qty));
+  $('job-eq-search').value='';
+  renderJobEquipmentPicker();
+}
+function toggleJobEqItem(itemId){
+  if(jobEqPickerState.items.has(itemId)) jobEqPickerState.items.delete(itemId);
+  else jobEqPickerState.items.set(itemId,1);
+  renderJobEquipmentPicker();
+}
+function setJobEqQty(itemId,qty){
+  jobEqPickerState.items.set(itemId,Math.max(1,parseInt(qty)||1));
+}
+function renderJobEquipmentPicker(){
+  const q=($('job-eq-search')?.value||'').toLowerCase();
+  const list=$('job-eq-list'); if(!list)return;
+  list.innerHTML='';
+  const inv=getInv().filter(x=>x.org===CU?.org&&(!q||x.name.toLowerCase().includes(q)||catsOf(x).join(' ').toLowerCase().includes(q)));
+  if(!inv.length){ list.innerHTML='<div class="text-xs text-muted" style="padding:8px;">No matching inventory items.</div>'; }
+  inv.slice(0,40).forEach(item=>{
+    const checked=jobEqPickerState.items.has(item.id);
+    const row=el('div','flex gap-8 ic-center',``);
+    row.style.cssText='padding:6px 4px;cursor:pointer;border-bottom:1px solid var(--g100);';
+    row.innerHTML=`<div class="checklist-check" style="width:20px;height:20px;flex-shrink:0;${checked?'background:var(--teal);border-color:var(--teal);':''}">${checked?'✓':''}</div><div class="flex-1 text-sm">${item.emoji||'📦'} ${item.name}</div>`;
+    row.onclick=(e)=>{ if(e.target.tagName!=='INPUT') toggleJobEqItem(item.id); };
+    list.appendChild(row);
+  });
+  const selWrap=$('job-eq-selected'); selWrap.innerHTML='';
+  if(jobEqPickerState.items.size){
+    selWrap.appendChild(el('div','sec-lbl',`Selected (${jobEqPickerState.items.size})`));
+    [...jobEqPickerState.items.entries()].forEach(([itemId,qty])=>{
+      const item=getInv().find(i=>i.id===itemId); if(!item)return;
+      const row=el('div','flex gap-8 ic-center mt-4');
+      row.innerHTML=`<div class="flex-1 text-sm">${item.emoji||'📦'} ${item.name}</div>`;
+      const qtyInp=el('input','field'); qtyInp.type='number'; qtyInp.min='1'; qtyInp.style.cssText='width:64px;'; qtyInp.value=qty;
+      qtyInp.oninput=()=>setJobEqQty(itemId,qtyInp.value);
+      row.appendChild(qtyInp);
+      const rm=el('button','btn btn-subtle btn-sm','✕'); rm.onclick=()=>toggleJobEqItem(itemId);
+      row.appendChild(rm);
+      selWrap.appendChild(row);
+    });
+  }
+}
+
 function openNewJobSheet(){
   $('job-sheet-title').textContent='New Job';
   $('job-edit-id').value='';
@@ -2762,6 +2878,7 @@ function openNewJobSheet(){
   $('job-all-hands').checked=false;
   $('job-all-hands').closest('.card').style.display=canDeclareAllHands()?'':'none';
   $('job-delete-btn').style.display='none';
+  resetJobEqPicker();
   openSheet('sh-add-job');
 }
 
@@ -2777,12 +2894,17 @@ function saveJob(){
   const wasAllHands=editId?(jobs.find(j=>j.id===editId)?.requireAllHands||false):false;
   const nowAllHands=canDeclareAllHands()?$('job-all-hands').checked:wasAllHands;
   const isMultiDay=endDate&&endDate!==date;
+  const equipmentItems=[...jobEqPickerState.items.entries()].map(([itemId,qty])=>{
+    const item=getInv().find(i=>i.id===itemId);
+    return {itemId,name:item?item.name:'(removed item)',qty};
+  });
   const data={
     name,date,endDate:endDate||null,isMultiDay:!!isMultiDay,
     startTime:$('job-start').value,
     endTime:$('job-end').value,
     location,
     equipment:$('job-equipment').value.trim(),
+    equipmentItems,
     crew:$('job-crew').value.trim(),
     notes:$('job-notes').value.trim(),
     requireAllHands:nowAllHands,
@@ -2852,6 +2974,7 @@ function openEditJob(jobId){
   $('job-all-hands').checked=!!job.requireAllHands;
   $('job-all-hands').closest('.card').style.display=canDeclareAllHands()?'':'none';
   $('job-delete-btn').style.display=canManageShifts()?'':'none';
+  loadJobEqPicker(job);
   openSheet('sh-add-job');
 }
 
@@ -2882,7 +3005,8 @@ function renderJobList(){
       ${(()=>{ const jl=getJobLog(j.id); return jl.handoff?'<div class="chip chip-tl mt-4" style="display:inline-flex;">🔄 Handoff Recorded</div>':''; })()}
       <div class="text-xs text-muted mt-4">📅 ${j.date}${j.isMultiDay&&j.endDate?' – '+j.endDate+' ('+dayCount+' day'+(dayCount>1?'s':'')+')':(j.isMultiDay?'':'')}${j.startTime?' · 🕐 '+j.startTime+(j.endTime?' – '+j.endTime+' daily':''):''}</div>
       <div class="text-xs text-muted mt-4">📍 ${j.location}</div>
-      ${j.equipment?`<div class="text-xs mt-8"><b>Equipment:</b> ${j.equipment}</div>`:''}
+      ${(j.equipmentItems&&j.equipmentItems.length)?`<div class="text-xs mt-8"><b>Equipment (inventory):</b> ${j.equipmentItems.map(ei=>`${ei.name} x${ei.qty}`).join(', ')}</div>`:''}
+      ${j.equipment?`<div class="text-xs mt-8"><b>Notes:</b> ${j.equipment}</div>`:''}
       ${j.crew?`<div class="text-xs mt-4"><b>Crew:</b> ${j.crew}</div>`:''}
       ${j.notes?`<div class="text-xs text-muted mt-4">${j.notes}</div>`:''}
     `;
@@ -3035,15 +3159,55 @@ function openJobChecklist(jobId){
   jcCurrentJobId=jobId;
   $('jc-job-id').value=jobId;
   $('jc-title').textContent=job.name;
+  resetSignInState();
 
-  // Auto-seed checklist from job's equipment field the first time this job's checklist is opened
   let log=getJobLog(jobId);
-  if(!log.checklist.length && job.equipment){
-    log=updateJobLog(jobId,cur=>{ cur.checklist=parseEquipmentToChecklist(job.equipment); });
+  if(!log.checklist.length){
+    // First time this job's checklist is opened — seed from linked equipment
+    // items (for auto-checkout) plus any free-text equipment notes.
+    const seeded=(job.equipmentItems||[]).map(ei=>({id:'ci_'+uid(),text:`${ei.name} (x${ei.qty})`,checked:false,itemId:ei.itemId,qty:ei.qty}));
+    if(job.equipment) seeded.push(...parseEquipmentToChecklist(job.equipment));
+    log=updateJobLog(jobId,cur=>{ cur.checklist=seeded; });
+  } else {
+    // Not the first time — reconcile with whatever the job's equipment list
+    // looks like NOW, instead of leaving the checklist frozen at first-open.
+    syncChecklistWithJob(jobId);
   }
 
   renderJobChecklistSheet();
   openSheet('sh-job-checklist');
+}
+
+// Keeps a job's checklist in sync with its current equipmentItems list:
+// - Newly added equipment gets appended as a new unchecked checklist line.
+// - Equipment removed from the job gets dropped from the checklist too —
+//   but ONLY if it was never actually checked out, so nothing tracking
+//   real, already-checked-out gear ever silently disappears.
+function syncChecklistWithJob(jobId){
+  const job=getJobs().find(j=>j.id===jobId); if(!job)return;
+  const log=getJobLog(jobId);
+  const equipmentItems=job.equipmentItems||[];
+  let changed=false;
+  let checklist=[...log.checklist];
+
+  equipmentItems.forEach(ei=>{
+    if(!checklist.some(ci=>ci.itemId===ei.itemId)){
+      checklist.push({id:'ci_'+uid(),text:`${ei.name} (x${ei.qty})`,checked:false,itemId:ei.itemId,qty:ei.qty});
+      changed=true;
+    }
+  });
+
+  const stillOutIds=new Set(getCOs().filter(c=>c.jobId===jobId&&!c.returnedAt).map(c=>c.itemId));
+  const before=checklist.length;
+  checklist=checklist.filter(ci=>{
+    if(!ci.itemId) return true; // free-text checklist lines are untouched
+    if(equipmentItems.some(ei=>ei.itemId===ci.itemId)) return true; // still needed
+    if(stillOutIds.has(ci.itemId)) return true; // already checked out — keep so it can be signed back in
+    return false; // safe to drop — removed from the job and never checked out
+  });
+  if(checklist.length!==before) changed=true;
+
+  if(changed) updateJobLog(jobId,cur=>{ cur.checklist=checklist; });
 }
 
 function renderJobChecklistSheet(){
@@ -3084,6 +3248,50 @@ function renderJobChecklistSheet(){
     });
     listWrap.appendChild(row);
   });
+
+  // ── Setup confirmation / automatic checkout ──
+  const setupWrap=$('jc-setup-confirm');
+  const hasLinkedItems=log.checklist.some(i=>i.itemId);
+  if(log.setupConfirm){
+    const stillOut=getCOs().filter(c=>c.jobId===job.id&&!c.returnedAt);
+    let html=`<div class="card tl">
+      <div class="fw7 text-sm">✅ Setup Confirmed — Equipment Checked Out</div>
+      <div class="text-xs text-muted mt-4">By ${log.setupConfirm.confirmedBy} at ${fmtTime(log.setupConfirm.ts)}</div>
+      ${log.setupConfirm.shortages&&log.setupConfirm.shortages.length?`<div class="text-xs mt-4" style="color:var(--warn);">⚠️ Shortages: ${log.setupConfirm.shortages.join(', ')}</div>`:''}
+    </div>`;
+    setupWrap.innerHTML=html;
+
+    if(stillOut.length){
+      const otherJobs=getJobs().filter(j=>j.org===CU.org&&j.id!==job.id);
+      const signInCard=el('div','card mg mt-8');
+      signInCard.innerHTML=`<div class="fw7 text-sm">📥 Sign Equipment Back In</div>
+        <div class="text-xs text-muted mt-4" style="margin-bottom:8px;">Choose what happens to each item — return it to inventory, or transfer it straight to another job.</div>`;
+      stillOut.forEach(c=>{
+        const action=signInActions.get(c.id)||'return';
+        const row=el('div','flex gap-8 ic-center mt-6');
+        row.innerHTML=`<div class="flex-1 text-sm">${c.itemName} (x${c.qty})</div>`;
+        const sel=el('select','field'); sel.style.cssText='flex:0 0 auto;max-width:180px;';
+        sel.innerHTML=`<option value="return" ${action==='return'?'selected':''}>↩ Return to Inventory</option>`+
+          otherJobs.map(j=>`<option value="${j.id}" ${action===j.id?'selected':''}>→ Transfer to: ${j.name}</option>`).join('');
+        sel.onchange=()=>setSignInAction(c.id,sel.value);
+        row.appendChild(sel);
+        signInCard.appendChild(row);
+      });
+      const btn=el('button','btn btn-ok btn-full mt-8','📥 Process Sign-In / Transfers');
+      btn.onclick=confirmSignBackIn;
+      signInCard.appendChild(btn);
+      setupWrap.appendChild(signInCard);
+    } else {
+      setupWrap.appendChild(el('div','text-xs text-muted mt-8','✅ All equipment for this job has been signed back in.'));
+    }
+  } else if(hasLinkedItems){
+    setupWrap.innerHTML='';
+    const btn=el('button','btn btn-ok btn-full','✅ Confirm Setup Complete — Check Out Equipment');
+    btn.onclick=confirmJobSetup;
+    setupWrap.appendChild(btn);
+  } else {
+    setupWrap.innerHTML='';
+  }
 
   // ── End section ──
   const endWrap=$('jc-end-content');
@@ -3190,6 +3398,115 @@ function confirmJobStart(){
   toast(cmp.onTime?'✅ Confirmed — on time!':`⏱ Confirmed — ${cmp.note}`);
   renderJobChecklistSheet();
 }
+
+// Automatically checks out every inventory-linked checklist item for this job.
+// Only runs once per job (guarded by log.setupConfirm) so re-opening the
+// checklist never double-checks-out the same gear.
+async function confirmJobSetup(){
+  const job=getJobs().find(j=>j.id===jcCurrentJobId); if(!job)return;
+  const log=getJobLog(jcCurrentJobId);
+  if(log.setupConfirm){ toast('Setup already confirmed for this job.'); return; }
+  const linkedItems=log.checklist.filter(i=>i.itemId);
+  const uncheckedLinked=linkedItems.filter(i=>!i.checked);
+  if(uncheckedLinked.length){
+    const ok=await iqConfirm(`${uncheckedLinked.length} equipment item(s) aren't checked off yet. Confirm setup and check out equipment anyway?`,'Incomplete Checklist');
+    if(!ok) return;
+  }
+  const inv=getInv();
+  const cos=getCOs();
+  const shortages=[];
+  let checkedOutCount=0;
+  linkedItems.forEach(ci=>{
+    // Already covered by an active checkout tied to this job (e.g. transferred
+    // in from another job)? Don't check it out again.
+    if(cos.some(c=>c.jobId===job.id&&c.itemId===ci.itemId&&!c.returnedAt)) return;
+    const i=inv.findIndex(x=>x.id===ci.itemId); if(i<0) return;
+    const item=inv[i];
+    const avail=item.qty-(item.checkedOut||0);
+    const takeQty=Math.min(ci.qty||1,avail);
+    if(takeQty<=0){ shortages.push(`${item.name} (none available)`); return; }
+    if(takeQty<(ci.qty||1)) shortages.push(`${item.name} (only ${takeQty}/${ci.qty} available)`);
+    item.checkedOut=(item.checkedOut||0)+takeQty;
+    cos.push({id:uid(),org:CU.org,itemId:item.id,itemName:item.name,qty:takeQty,userId:CU.id,userName:CU.firstname||CU.username,note:`Job setup — ${job.name}`,jobId:job.id,checkedOutAt:ts(),returnedAt:null});
+    checkedOutCount++;
+    if(avail-takeQty<=item.lowAt){ addAlert('stock',`Low Stock: ${item.name}`,`Only ${avail-takeQty} remaining after job setup checkout.`,item.id); }
+  });
+  saveInv(inv); saveCOs(cos);
+  updateJobLog(jcCurrentJobId,cur=>{ cur.setupConfirm={confirmedBy:CU.firstname||CU.username,ts:ts(),shortages}; });
+  addLog('job',`Setup confirmed: ${job.name}`,`${checkedOutCount} item(s) auto checked-out by ${CU.firstname||CU.username}`);
+  updateBadges();
+  toast(shortages.length?`⚠️ Setup confirmed — some shortages, check details`:'✅ Setup confirmed — equipment checked out!');
+  renderJobChecklistSheet(); renderInv(); renderDashboard();
+}
+
+// Returns every checkout tagged to this job (created by confirmJobSetup) —
+// called automatically when the job is confirmed finished, so gear doesn't
+// stay stuck "checked out" forever after the job wraps.
+// ══════════════════════════════════════════════════════════════
+//  SIGN EQUIPMENT BACK IN — manual, worker-controlled. Only items the
+//  worker actually checks get returned; anything left unchecked (e.g.
+//  carried straight to another job) stays checked out under this job's
+//  tag until it's signed in later, from here or another session.
+// ══════════════════════════════════════════════════════════════
+// signInActions maps checkout id -> 'return' (default) or a destination job id to transfer to.
+const signInActions=new Map();
+function resetSignInState(){ signInActions.clear(); }
+function setSignInAction(coId,action){ signInActions.set(coId,action); renderJobChecklistSheet(); }
+
+// Processes every still-checked-out item for this job according to the
+// worker's chosen action per item: return it to inventory, or transfer it
+// cleanly to another job (fully re-tagged — no longer counted under this job).
+async function confirmSignBackIn(){
+  const job=getJobs().find(j=>j.id===jcCurrentJobId); if(!job)return;
+  const stillOut=getCOs().filter(c=>c.jobId===job.id&&!c.returnedAt);
+  if(!stillOut.length){ toast('Nothing to process.'); return; }
+  const transfers=stillOut.filter(c=>{ const a=signInActions.get(c.id)||'return'; return a!=='return'; });
+  if(transfers.length){
+    const summary=transfers.map(c=>{ const destJob=getJobs().find(j=>j.id===signInActions.get(c.id)); return `${c.itemName} → ${destJob?destJob.name:'unknown job'}`; }).join(', ');
+    const ok=await iqConfirm(`Transfer: ${summary}. Everything else will be signed back in to inventory. Proceed?`,'Confirm Sign-In & Transfers');
+    if(!ok) return;
+  }
+
+  const cos=getCOs(); const inv=getInv();
+  let returnedCount=0, transferredCount=0;
+  const transferLogLines=[];
+
+  stillOut.forEach(c=>{
+    const action=signInActions.get(c.id)||'return';
+    const i=cos.findIndex(x=>x.id===c.id); if(i<0) return;
+    if(action==='return'){
+      cos[i].returnedAt=ts();
+      const ii=inv.findIndex(x=>x.id===c.itemId);
+      if(ii>=0) inv[ii].checkedOut=Math.max(0,(inv[ii].checkedOut||0)-c.qty);
+      returnedCount++;
+    } else {
+      // Transfer — fully re-tag to the destination job. Inventory quantities
+      // are untouched (still checked out, just now owned by the new job) and
+      // it no longer counts toward the original job at all.
+      const destJob=getJobs().find(j=>j.id===action); if(!destJob) return;
+      cos[i].jobId=destJob.id;
+      cos[i].note=`Transferred from ${job.name} to ${destJob.name}`;
+      transferredCount++;
+      transferLogLines.push(`${c.itemName} → ${destJob.name}`);
+      // Make sure the destination job's checklist reflects this item as
+      // already checked out, so its own "Confirm Setup Complete" doesn't
+      // try to check it out a second time.
+      const destLog=getJobLog(destJob.id);
+      if(!destLog.checklist.some(ci=>ci.itemId===c.itemId)){
+        updateJobLog(destJob.id,cur=>{
+          cur.checklist.push({id:'ci_'+uid(),text:`${c.itemName} (x${c.qty}) — transferred in`,checked:true,itemId:c.itemId,qty:c.qty});
+        });
+      }
+    }
+  });
+  saveCOs(cos); saveInv(inv);
+
+  addLog('inv',`Equipment processed: ${job.name}`,`${returnedCount} returned${transferredCount?`, ${transferredCount} transferred (${transferLogLines.join('; ')})`:''} — by ${CU.firstname||CU.username}`);
+  toast(`✅ ${returnedCount} returned${transferredCount?`, ${transferredCount} transferred`:''}`);
+  resetSignInState();
+  renderJobChecklistSheet(); renderInv(); renderDashboard();
+}
+
 async function confirmJobEnd(){
   const job=getJobs().find(j=>j.id===jcCurrentJobId); if(!job)return;
   const log=getJobLog(jcCurrentJobId);
@@ -3215,13 +3532,14 @@ async function confirmJobEnd(){
     addAlert('shift',`Job End — ${job.name}`,`${cmp.note} (confirmed by ${CU.firstname||CU.username})`,null);
     updateBadges();
   }
+
   if(handoff){
     addLog('shift','Evening handoff recorded',`${job.name} — morning crew relieved at ${fmtTime(now.getTime())}`);
     addAlert('shift',`🔄 Handoff — ${job.name}`,`Evening shift relieved morning at ${fmtTime(now.getTime())}. OT credited to morning crew.`,null);
     updateBadges();
     toast(`✅ Job confirmed. Evening handoff logged — morning OT credited.`);
   } else {
-    toast(cmp.onTime?'✅ Confirmed — finished on time!':`⏱ Confirmed — ${cmp.note}`);
+    toast(cmp.onTime?'✅ Confirmed — finished on time! Remember to sign equipment back in below.':`⏱ Confirmed — ${cmp.note}`);
   }
   renderJobChecklistSheet();
 }
@@ -3873,9 +4191,152 @@ function exitPreview(){
 }
 
 // ══════════════════════════════════════════════════════════════
+//  OFFLINE TROUBLESHOOTING KNOWLEDGE BASE
+//  Proven fix sequences for common field/AV equipment issues.
+//  Works with zero internet — bundled directly in the app.
+// ══════════════════════════════════════════════════════════════
+const TROUBLESHOOTING_KB=[
+  {id:'tk_no_audio_speaker',title:'Speaker — No Sound',keywords:['speaker','no sound','no audio','pa','dead speaker','silent'],
+    methods:[
+      {title:'Check signal path first',steps:['Confirm the mixer channel fader and master fader are both up.','Check the channel isn\'t muted or soloed to another channel.','Swap the XLR/TRS cable at the speaker end with a known-good cable.']},
+      {title:'Check power',steps:['Confirm the speaker\'s power switch is on and the outlet/power strip is live.','Check the amp\'s limiter/protect light isn\'t lit (indicates overload/thermal cutout — let it cool).','Try a different outlet or power strip.']},
+      {title:'Isolate the fault',steps:['Swap the suspect speaker with a known-working one on the same channel.','If sound now works, the speaker/cable is faulty — tag it and log a status change.','If still silent, the issue is upstream (mixer/DI/console).']}
+    ]},
+  {id:'tk_mic_dropout',title:'Wireless Microphone — Dropout / Interference',keywords:['wireless mic','microphone dropout','mic cutting out','interference','static','crackling mic'],
+    methods:[
+      {title:'Line of sight & distance',steps:['Move closer to the receiver or reposition to remove obstructions (walls, metal, bodies) between mic and receiver.','Keep antennas vertical and away from metal racks.']},
+      {title:'Frequency conflict',steps:['Re-scan for a clear frequency on the receiver.','Check for other wireless systems (other mics, in-ear monitors, WiFi) on nearby frequencies and change channel/group.']},
+      {title:'Battery & hardware',steps:['Replace batteries — low battery causes dropout before it dies completely.','Check the mic capsule/connector for looseness.']}
+    ]},
+  {id:'tk_feedback',title:'Audio Feedback (Squeal/Howl)',keywords:['feedback','squeal','howling','ringing sound'],
+    methods:[
+      {title:'Immediate fix',steps:['Pull down the fader/gain on the channel causing it immediately.','Increase distance between mic and speaker, or point mic away from speakers.']},
+      {title:'EQ the ring out',steps:['Identify the ringing frequency and notch it out with a narrow EQ cut (parametric EQ or graphic EQ on that speaker zone).']},
+      {title:'Gain structure',steps:['Lower mic gain/trim rather than compensating with the fader.','Check monitor wedge volume if feedback is happening on stage.']}
+    ]},
+  {id:'tk_mixer_channel_dead',title:'Mixer Channel Not Passing Signal',keywords:['mixer channel','no signal','channel dead','console channel'],
+    methods:[
+      {title:'Basic checks',steps:['Confirm channel isn\'t muted, faded down, or routed to the wrong bus/output.','Check gain/trim isn\'t at zero.','Confirm phantom power (48V) is on if using a condenser mic/DI that needs it.']},
+      {title:'Swap test',steps:['Move the same source to a different known-working channel — if it works there, the original channel or its input jack is faulty.']},
+      {title:'Cable/connector',steps:['Try a different cable and a different input type (XLR vs 1/4") if the channel supports both.']}
+    ]},
+  {id:'tk_di_hum',title:'DI Box / Cable Hum or Buzz',keywords:['hum','buzz','ground loop','di box noise'],
+    methods:[
+      {title:'Ground loop isolation',steps:['Engage the ground lift switch on the DI box.','Ensure all gear is on the same power circuit/phase where possible.']},
+      {title:'Cable check',steps:['Swap the cable — a damaged shield is a common hum source.','Keep audio cables away from running power cables; cross them at 90° if they must cross.']}
+    ]},
+  {id:'tk_projector_no_power',title:'Projector Won\'t Power On',keywords:['projector','wont turn on','no power','projector dead'],
+    methods:[
+      {title:'Power basics',steps:['Confirm the power cable is seated at both ends and the outlet is live.','Check for a physical power switch on the unit itself (separate from the remote).']},
+      {title:'Lamp/thermal protection',steps:['If it powered off recently, let it cool 5–10 minutes — many projectors lock out immediately after a hot shutdown.','Check for a blinking status LED and match it against the model\'s error-code chart if available.']},
+      {title:'Reset',steps:['Unplug for 60 seconds, then reconnect and retry.']}
+    ]},
+  {id:'tk_projector_no_signal',title:'Projector Powers On But No Signal / Blue Screen',keywords:['projector no signal','blue screen','projector black screen','no input detected'],
+    methods:[
+      {title:'Source & cable',steps:['Confirm the correct input source is selected on the projector (HDMI1/HDMI2/VGA etc).','Reseat the cable at both ends; try a different cable.']},
+      {title:'Resolution mismatch',steps:['Lower the source device\'s output resolution/refresh rate to a safe default (1080p 60Hz) and retry.']},
+      {title:'HDCP/adapter issues',steps:['If using an adapter (USB-C/DisplayPort to HDMI), try a different adapter — cheap adapters commonly fail to negotiate signal.']}
+    ]},
+  {id:'tk_led_wall_panel',title:'LED Wall — Dead Panel or Dead Pixels',keywords:['led wall','dead panel','dead pixel','led panel not lighting'],
+    methods:[
+      {title:'Data & power chain',steps:['Confirm the data cable (usually a Cat cable) is seated in and out of the affected panel — a bad connection on this panel often blacks out everything downstream too.','Check the panel\'s power input/output cables in the daisy chain.']},
+      {title:'Isolate the panel',steps:['Swap the suspect panel with a working one from elsewhere in the wall — if the fault follows the panel, it\'s the panel; if it stays in place, it\'s the cabling/processor output for that position.']}
+    ]},
+  {id:'tk_camera_no_power',title:'Camera Won\'t Power On',keywords:['camera wont turn on','camera no power','camera dead'],
+    methods:[
+      {title:'Power source',steps:['Try a different battery — swap in a known-charged one.','If on external power, check the power brick and cable for damage.']},
+      {title:'Physical checks',steps:['Check the battery contacts and door latch for debris or damage.','Try a hard reset if the camera supports one (remove battery for 30s, or the manufacturer\'s reset combo).']}
+    ]},
+  {id:'tk_hdmi_no_signal',title:'HDMI Cable — No Signal / Flickering',keywords:['hdmi','no signal','flickering','hdmi not working'],
+    methods:[
+      {title:'Basic swap test',steps:['Try a different HDMI cable — HDMI cables fail more than people expect, especially long runs.','Try a shorter cable to rule out cable-length signal loss.']},
+      {title:'Handshake reset',steps:['Unplug the HDMI cable from the display, wait 5 seconds, replug — this forces a fresh EDID handshake.','Power cycle the source device.']}
+    ]},
+  {id:'tk_power_breaker_trip',title:'Extension Cord / Power Strip Trips Breaker',keywords:['breaker trip','power tripping','extension cord','circuit overload'],
+    methods:[
+      {title:'Load check',steps:['Unplug some devices from that circuit and redistribute the load across other circuits.','Confirm you\'re not daisy-chaining multiple high-draw devices (amps, lighting, heaters) on one run.']},
+      {title:'Cable check',steps:['Inspect the extension cord for damage, pinches, or water exposure — a shorted cord will trip a breaker immediately on load.']}
+    ]},
+  {id:'tk_generator_wont_start',title:'Generator Won\'t Start',keywords:['generator','wont start','generator dead'],
+    methods:[
+      {title:'Fuel & basics',steps:['Confirm fuel level and that the fuel valve/choke is set correctly for starting.','Check the kill switch/circuit breaker on the generator itself isn\'t tripped or in the off position.']},
+      {title:'Battery/pull start',steps:['For electric start units, check the battery connection.','For pull-start units, ensure choke is engaged for a cold start.']}
+    ]},
+  {id:'tk_radio_no_reception',title:'Two-Way Radio — No Reception / Range Issues',keywords:['radio','walkie talkie','no reception','range issue','comms dead'],
+    methods:[
+      {title:'Basic checks',steps:['Confirm both radios are on the same channel and privacy/CTCSS code.','Check battery level — range drops noticeably as batteries weaken.']},
+      {title:'Environment',steps:['Move away from large metal structures or below-grade areas that block signal.','If indoors in a large venue, range may simply be limited by walls — reposition or add a repeater if available.']}
+    ]}
+];
+// Very light keyword-overlap scoring — no external libraries, works fully offline.
+function matchTroubleshootingKB(query){
+  const qWords=String(query).toLowerCase().split(/[^a-z0-9]+/).filter(w=>w.length>2);
+  if(!qWords.length) return [];
+  const scored=TROUBLESHOOTING_KB.map(entry=>{
+    let score=0;
+    entry.keywords.forEach(kw=>{
+      if(String(query).toLowerCase().includes(kw)) score+=3; // direct phrase match is a strong signal
+    });
+    qWords.forEach(w=>{ if(entry.keywords.some(kw=>kw.includes(w))) score+=1; });
+    return {entry,score};
+  }).filter(s=>s.score>0).sort((a,b)=>b.score-a.score);
+  return scored.slice(0,2).map(s=>s.entry);
+}
+function formatTroubleshootingEntry(entry){
+  let html=`<b>🛠️ ${entry.title}</b><br><span class="text-xs" style="opacity:.7;">Proven methods, in the order most techs try them:</span>`;
+  entry.methods.forEach((m,i)=>{
+    html+=`<br><br><b>${i+1}. ${m.title}</b><ul style="margin:4px 0 0 18px;padding:0;">${m.steps.map(s=>`<li>${s}</li>`).join('')}</ul>`;
+  });
+  return html;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  AI KNOWLEDGE CACHE — anything the AI researches (with web search)
+//  gets saved here, keyed by the question, so the same or a similar
+//  question never needs the internet again.
+// ══════════════════════════════════════════════════════════════
+function getKnowledgeCache(){ return LS.get('iq_ai_knowledge')||[]; }
+function saveKnowledgeCache(v){ sbSave('iq_ai_knowledge',v); }
+function normalizeForCache(s){ return String(s).toLowerCase().replace(/[^a-z0-9\s]/g,'').split(/\s+/).filter(w=>w.length>2); }
+// Jaccard word-overlap similarity — simple, dependency-free, good enough for
+// catching "the same question asked slightly differently."
+function knowledgeSimilarity(aWords,bWords){
+  const a=new Set(aWords),b=new Set(bWords);
+  const inter=[...a].filter(w=>b.has(w)).length;
+  const union=new Set([...a,...b]).size;
+  return union?inter/union:0;
+}
+function matchKnowledgeCache(query){
+  const cache=getKnowledgeCache().filter(e=>e.org===CU?.org);
+  const qWords=normalizeForCache(query);
+  let best=null,bestScore=0;
+  cache.forEach(entry=>{
+    const score=knowledgeSimilarity(qWords,entry.words||normalizeForCache(entry.query));
+    if(score>bestScore){ bestScore=score; best=entry; }
+  });
+  return bestScore>=0.5?best:null;
+}
+function addToKnowledgeCache(query,answer){
+  const cache=getKnowledgeCache();
+  cache.unshift({id:uid(),org:CU.org,query,words:normalizeForCache(query),answer,ts:ts()});
+  if(cache.length>300) cache.length=300; // keep this from growing unbounded
+  saveKnowledgeCache(cache);
+}
+
+// ══════════════════════════════════════════════════════════════
 //  AI ASSISTANT
 // ══════════════════════════════════════════════════════════════
-function openAI(){ $('ai-modal').classList.add('open'); const m=$('ai-msgs'); if(!m.innerHTML) addAIMsg('bot','Hi! I\'m your InvOS Assistant 🤖 I can help with inventory, shifts, checkouts, team info — or anything else you\'d like to know. What\'s up?'); }
+function openAI(){
+  $('ai-modal').classList.add('open');
+  const m=$('ai-msgs');
+  if(!m.innerHTML){
+    if(!navigator.onLine){
+      addAIMsg('bot','📡 You\'re currently offline — the AI Assistant needs an internet connection to think and respond. Everything else in InvOS (inventory, shifts, jobs, chat) keeps working fine offline; just reconnect whenever you want to ask me something.');
+    } else {
+      addAIMsg('bot','Hi! I\'m your InvOS Assistant 🤖 I can help with inventory, shifts, checkouts, team info — or anything else you\'d like to know. What\'s up?');
+    }
+  }
+}
 function closeAI(){ $('ai-modal').classList.remove('open'); }
 
 function addAIMsg(role,text){ const d=el('div','ai-msg '+role); if(role==='bot') d.innerHTML=`<div class="ai-sender">InvOS AI</div>${text}`; else d.textContent=text; $('ai-msgs').appendChild(d); $('ai-msgs').scrollTop=$('ai-msgs').scrollHeight; return d; }
@@ -3883,6 +4344,30 @@ function addAIMsg(role,text){ const d=el('div','ai-msg '+role); if(role==='bot')
 async function sendAI(){
   const inp=$('ai-in'); const text=inp.value.trim(); if(!text)return;
   inp.value=''; addAIMsg('user',text);
+
+  // 1) Offline troubleshooting KB — instant, zero network, proven fix sequences
+  const kbMatches=matchTroubleshootingKB(text);
+  if(kbMatches.length){
+    kbMatches.forEach(entry=>addAIMsg('bot',formatTroubleshootingEntry(entry)));
+    addAIMsg('bot','That\'s from the built-in troubleshooting guide — works offline. Want me to look into anything more specific?');
+    $('ai-msgs').scrollTop=$('ai-msgs').scrollHeight;
+    return;
+  }
+
+  // 2) Previously-researched knowledge cache — instant, zero network, reuses past answers
+  const cached=matchKnowledgeCache(text);
+  if(cached){
+    addAIMsg('bot',`${cached.answer.replace(/\n/g,'<br>')}<br><br><span class="text-xs" style="opacity:.7;">📚 From knowledge saved earlier — works offline.</span>`);
+    $('ai-msgs').scrollTop=$('ai-msgs').scrollHeight;
+    return;
+  }
+
+  // 3) Nothing cached — needs a live, web-search-grounded answer
+  if(!navigator.onLine){
+    addAIMsg('bot','📡 I don\'t have this one saved yet, and I\'m offline right now — reconnect and ask again. Once I look it up, I\'ll remember it for next time even without internet.');
+    return;
+  }
+
   // Build context
   const inv=getInv().filter(x=>x.org===CU?.org);
   const cos=getCOs().filter(x=>x.org===CU?.org&&!x.returnedAt);
@@ -3894,23 +4379,29 @@ Current inventory (${inv.length} items): ${inv.map(i=>`${i.name} (qty:${i.qty}, 
 Active checkouts: ${cos.map(c=>`${c.itemName} x${c.qty} by ${c.userName}`).join('; ')||'none'}.
 Today's shifts: ${shifts.map(s=>{ const u=users.find(x=>x.id===s.userId); return `${u?.firstname||s.name} (${s.shift}${s.clockIn?', in '+fmtTime(s.clockIn):''}${s.clockOut?', out '+fmtTime(s.clockOut):''})`;}).join('; ')||'none scheduled'}.
 Team: ${users.map(u=>`${u.firstname||u.username} (${roleLabel(u.role)})`).join(', ')}.
-Answer helpfully and conversationally. You can also answer general questions outside the app — use your knowledge freely.`;
+You have live web search available — use it for anything involving current info, specific equipment models/specs, or troubleshooting that benefits from up-to-date sources. Answer helpfully and conversationally.`;
 
   const typing=addAIMsg('bot','<div class="ai-typing"><span></span><span></span><span></span></div>');
   try{
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1000,system:context,messages:[{role:'user',content:text}]})
+    const resp=await fetch(`${SB_URL}/functions/v1/invos-ai-proxy`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY},
+      body:JSON.stringify({system:context,messages:[{role:'user',content:text}]})
     });
-    if(!resp.ok){ throw new Error('HTTP '+resp.status); }
     const data=await resp.json();
-    const reply=data?.content?.[0]?.text||'Sorry, I couldn\'t get a response right now.';
+    if(!resp.ok){ throw new Error(data?.error||('HTTP '+resp.status)); }
+    // Response may include multiple content blocks (web search tool calls/results
+    // interleaved with text) — concatenate every text block for the final reply.
+    const reply=(Array.isArray(data?.content)?data.content:[])
+      .map(block=>block.type==='text'?block.text:'')
+      .filter(Boolean).join('\n').trim()||'Sorry, I couldn\'t get a response right now.';
     typing.innerHTML=`<div class="ai-sender">InvOS AI</div>${reply.replace(/\n/g,'<br>')}`;
+    addToKnowledgeCache(text,reply); // remember this so next time it doesn't need the internet
   }catch(e){
     const isNet=e.message&&(e.message.includes('fetch')||e.message.includes('network')||e.message.includes('Failed'));
     typing.innerHTML=`<div class="ai-sender">InvOS AI</div>${isNet
       ?'No internet connection right now — AI requires an active connection. Your other app features still work offline.'
-      :'Something went wrong. Please try again.'}`;
+      :'Something went wrong: '+e.message}`;
   }
   $('ai-msgs').scrollTop=$('ai-msgs').scrollHeight;
 }
@@ -3943,6 +4434,7 @@ function initApp(){
   // Supabase init is fire-and-forget — never blocks UI
   try{ initSupabase(); }catch(e){ console.warn('Supabase init error:',e); }
   try{ bootstrap(); }catch(e){ console.error('Bootstrap failed:',e); }
+  try{ updateSyncBadge(); flushPendingSync(); }catch(e){ console.warn('Sync badge init failed:',e); }
   // Show UI after 800ms regardless of network state
   setTimeout(()=>{ revealAuthOrApp(); },800);
 }
