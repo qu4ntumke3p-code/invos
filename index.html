@@ -461,13 +461,20 @@ input[type="file"].styled-file-input::file-selector-button{
 
     <!-- INVENTORY -->
     <div class="page" id="page-inventory">
-      <div class="flex gap-8 ic-center" style="margin-bottom:12px;">
-        <div class="search-wrap flex-1" style="margin:0;"><span class="search-icon">🔍</span><input class="field" placeholder="Search inventory…" id="inv-search" oninput="renderInv()"></div>
-        <button class="btn btn-subtle" id="btn-upload-inv" onclick="openSheet('sh-upload-inv')">📤</button>
-        <button class="btn btn-mg" id="btn-add-item" onclick="openSheet('sh-add-item')">+ Add</button>
+      <div class="pill-row" id="inv-subtab-pills" style="margin-bottom:12px;">
+        <button class="pill on" id="inv-tab-items" onclick="setInvSubtab('items')">📦 All Items</button>
+        <button class="pill" id="inv-tab-status" onclick="setInvSubtab('status')">📊 Equipment Status</button>
       </div>
-      <div class="pill-row" id="cat-pills"></div>
-      <div id="inv-list"></div>
+      <div id="inv-subtab-items">
+        <div class="flex gap-8 ic-center" style="margin-bottom:12px;">
+          <div class="search-wrap flex-1" style="margin:0;"><span class="search-icon">🔍</span><input class="field" placeholder="Search inventory…" id="inv-search" oninput="renderInv()"></div>
+          <button class="btn btn-subtle" id="btn-upload-inv" onclick="openSheet('sh-upload-inv')">📤</button>
+          <button class="btn btn-mg" id="btn-add-item" onclick="openSheet('sh-add-item')">+ Add</button>
+        </div>
+        <div class="pill-row" id="cat-pills"></div>
+        <div id="inv-list"></div>
+      </div>
+      <div id="inv-subtab-status" style="display:none;"></div>
     </div>
 
     <!-- SHIFTS -->
@@ -568,6 +575,14 @@ input[type="file"].styled-file-input::file-selector-button{
       <div class="card" id="notif-card">
         <div class="sec-lbl">Notifications</div>
         <div id="notif-toggles"></div>
+      </div>
+      <div class="card" id="ai-knowledge-card" style="display:none;">
+        <div class="flex jc-between ic-center" style="margin-bottom:8px;">
+          <div class="sec-lbl" style="margin:0;">🧠 AI Knowledge Base</div>
+          <button class="btn btn-dv btn-sm" onclick="openFeedKnowledge()">+ Add Knowledge</button>
+        </div>
+        <div class="text-xs text-muted" style="margin-bottom:8px;">Anything you add here answers instantly, offline, with zero API usage — great for prepping answers while you're managing API costs.</div>
+        <div id="ai-knowledge-list"></div>
       </div>
       <div id="dev-panel-card" style="display:none;">
         <div class="card dv">
@@ -919,6 +934,17 @@ input[type="file"].styled-file-input::file-selector-button{
     <div class="sheet-hdr"><span class="sheet-title" id="mu-title">Manage User</span><button class="sheet-close" onclick="closeSheet('sh-manage-user')">✕</button></div>
     <input type="hidden" id="mu-uid">
     <div id="mu-content"></div>
+  </div>
+</div>
+
+<!-- Feed AI Knowledge -->
+<div class="overlay" id="sh-feed-knowledge" onclick="closeByOverlay(event,'sh-feed-knowledge')">
+  <div class="sheet">
+    <div class="sheet-hdr"><span class="sheet-title">Add Knowledge</span><button class="sheet-close" onclick="closeSheet('sh-feed-knowledge')">✕</button></div>
+    <div style="background:var(--tealBg);border-radius:10px;padding:11px;font-size:12px;color:var(--tealD);margin-bottom:12px;">This answers instantly, offline — the AI checks this before ever using an API call.</div>
+    <div class="form-row"><label class="form-lbl">Question / Topic *</label><input class="field" id="fk-question" placeholder="e.g. What's our standard mic check procedure?"></div>
+    <div class="form-row"><label class="form-lbl">Answer / Information *</label><textarea class="field" id="fk-answer" placeholder="The full answer the AI should give when asked this or something similar" style="min-height:100px;resize:vertical;"></textarea></div>
+    <button class="btn btn-dv btn-full" onclick="saveFeedKnowledge()">💾 Save to AI Knowledge</button>
   </div>
 </div>
 
@@ -1592,7 +1618,7 @@ function navTo(p){
   document.querySelectorAll('.ni[data-p="'+p+'"]').forEach(x=>x.classList.add('on'));
   if(p==='alerts'){ markAlertsRead(); renderAlerts(); updateBadges(); }
   if(p==='chat') renderChat();
-  if(p==='inventory') renderInv();
+  if(p==='inventory'){ if(invSubtab==='status') renderEquipmentStatus(); else renderInv(); }
   if(p==='shifts'){
     if(shiftsSubtab==='jobs'){ renderJobList(); }
     else if(shiftsSubtab==='schedule'){ renderScheduleTab(); }
@@ -1643,6 +1669,15 @@ function roleLabel(r){ const m={master:'Master Dev',owner:'Owner',supervisor:'Su
 //  INVENTORY
 // ══════════════════════════════════════════════════════════════
 let invCat='All';
+let invSubtab='items';
+function setInvSubtab(tab){
+  invSubtab=tab;
+  $('inv-tab-items').classList.toggle('on',tab==='items');
+  $('inv-tab-status').classList.toggle('on',tab==='status');
+  $('inv-subtab-items').style.display=tab==='items'?'':'none';
+  $('inv-subtab-status').style.display=tab==='status'?'':'none';
+  if(tab==='status') renderEquipmentStatus(); else renderInv();
+}
 const cats=['All','Tools','PPE','Electronics','Audio','Video','Comms','Safety','Vehicles','Other'];
 
 // Subcategories — only these three categories have them; everything else has none.
@@ -1733,6 +1768,79 @@ function renderInv(){
     return;
   }
   inv.forEach(item=>list.appendChild(itemCard(item)));
+}
+
+// ══════════════════════════════════════════════════════════════
+//  EQUIPMENT STATUS OVERVIEW — at-a-glance view of what's in use,
+//  available, damaged, missing, or still out on a job.
+// ══════════════════════════════════════════════════════════════
+function renderEquipmentStatus(){
+  const wrap=$('inv-subtab-status'); if(!wrap)return;
+  wrap.innerHTML='';
+  const inv=getInv().filter(x=>x.org===CU?.org);
+  const activeCos=getCOs().filter(c=>c.org===CU?.org&&!c.returnedAt);
+
+  const inUseItems=inv.filter(i=>(i.checkedOut||0)>0);
+  const availableItems=inv.filter(i=>(i.qty-(i.checkedOut||0))>0&&i.status==='ok');
+  const damagedItems=inv.filter(i=>i.status==='damaged');
+  const missingItems=inv.filter(i=>i.status==='missing');
+  const unusableItems=inv.filter(i=>i.status==='unusable');
+  const jobCheckouts=activeCos.filter(c=>c.jobId);
+
+  const section=(title,chipClass,count,bodyFn)=>{
+    const card=el('div','card mt-8');
+    const hdr=el('div','flex jc-between ic-center');
+    hdr.innerHTML=`<span class="fw7 text-sm">${title}</span><span class="chip ${chipClass}">${count}</span>`;
+    card.appendChild(hdr);
+    if(count===0){
+      card.appendChild(el('div','text-xs text-muted mt-8','Nothing here right now.'));
+    } else {
+      const body=el('div','mt-8');
+      bodyFn(body);
+      card.appendChild(body);
+    }
+    wrap.appendChild(card);
+  };
+
+  section('📤 Currently In Use',inUseItems.length?'chip-mg':'chip-g',inUseItems.length,body=>{
+    inUseItems.forEach(i=>{
+      const cosForItem=activeCos.filter(c=>c.itemId===i.id);
+      const row=el('div','flex jc-between ic-center mt-4');
+      row.innerHTML=`<span class="text-sm">${i.emoji||'📦'} ${i.name}</span><span class="text-xs text-muted">${i.checkedOut} of ${i.qty} out</span>`;
+      body.appendChild(row);
+      cosForItem.forEach(c=>{
+        const sub=el('div','text-xs text-muted mt-2',`　↳ x${c.qty} — ${c.userName}${c.jobId?` (job: ${getJobs().find(j=>j.id===c.jobId)?.name||'—'})`:''}, ${elapsed(c.checkedOutAt)}`);
+        body.appendChild(sub);
+      });
+    });
+  });
+
+  section('📥 Not Yet Signed Back In (Job Equipment)',jobCheckouts.length?'chip-wn':'chip-g',jobCheckouts.length,body=>{
+    jobCheckouts.forEach(c=>{
+      const job=getJobs().find(j=>j.id===c.jobId);
+      const row=el('div','text-sm mt-4',`${c.itemName} (x${c.qty}) — ${job?job.name:'unknown job'}`);
+      body.appendChild(row);
+      body.appendChild(el('div','text-xs text-muted mt-2',`　↳ Checked out ${elapsed(c.checkedOutAt)} by ${c.userName}`));
+    });
+  });
+
+  section('✅ Available',availableItems.length?'chip-ok':'chip-g',availableItems.length,body=>{
+    availableItems.forEach(i=>{
+      body.appendChild(el('div','flex jc-between ic-center mt-4',`<span class="text-sm">${i.emoji||'📦'} ${i.name}</span><span class="text-xs text-muted">${i.qty-(i.checkedOut||0)} available</span>`));
+    });
+  });
+
+  section('🔴 Damaged',damagedItems.length?'chip-er':'chip-g',damagedItems.length,body=>{
+    damagedItems.forEach(i=>body.appendChild(el('div','text-sm mt-4',`${i.emoji||'📦'} ${i.name}`)));
+  });
+
+  section('🟣 Missing',missingItems.length?'chip-mg':'chip-g',missingItems.length,body=>{
+    missingItems.forEach(i=>body.appendChild(el('div','text-sm mt-4',`${i.emoji||'📦'} ${i.name}`)));
+  });
+
+  section('⚫ Unusable',unusableItems.length?'chip-g':'chip-g',unusableItems.length,body=>{
+    unusableItems.forEach(i=>body.appendChild(el('div','text-sm mt-4',`${i.emoji||'📦'} ${i.name}`)));
+  });
 }
 
 function itemCard(item){
@@ -4015,6 +4123,11 @@ function renderProfile(){
     row.appendChild(t); nt.appendChild(row);
   });
 
+  // AI Knowledge card — visible to admin-level roles
+  const showKnowledge=canManageWorkers();
+  $('ai-knowledge-card').style.display=showKnowledge?'':'none';
+  if(showKnowledge) renderAIKnowledgeList();
+
   // Dev panel
   $('dev-panel-card').style.display=isMaster()?'':'none';
   if(isMaster()) renderDevPanel();
@@ -4234,11 +4347,24 @@ const TROUBLESHOOTING_KB=[
       {title:'Check power',steps:['Confirm the speaker\'s power switch is on and the outlet/power strip is live.','Check the amp\'s limiter/protect light isn\'t lit (indicates overload/thermal cutout — let it cool).','Try a different outlet or power strip.']},
       {title:'Isolate the fault',steps:['Swap the suspect speaker with a known-working one on the same channel.','If sound now works, the speaker/cable is faulty — tag it and log a status change.','If still silent, the issue is upstream (mixer/DI/console).']}
     ]},
+  {id:'tk_amplifier_power_no_sound',title:'Amplifier Has Power But No Sound',keywords:['amp has power no sound','amplifier no output','amp powered no sound'],
+    methods:[
+      {title:'Narrow down where the signal dies',steps:['If the amp has a headphone-out or monitor jack, check it — sound there but not from speakers means the fault is in the output stage, speaker wiring, or the amp\'s protection circuit, not the input.','If headphones are also silent, the problem is upstream: input selection, source, or preamp stage.']},
+      {title:'Protection mode check',steps:['Look for a lit "protect" LED or fault indicator — amps automatically mute themselves when they detect a short, overheating, or DC offset at the output.','Power off, disconnect speakers, let it cool for several minutes, then reconnect one speaker at a time to isolate whether a shorted speaker/cable is what tripped protection.']},
+      {title:'Basic checks',steps:['Confirm the correct input is selected (a surprisingly common cause — e.g. AUX selected while the source is plugged into a different input).','Check accessible fuses (power off, unplugged) and replace with the exact rated type if blown.','Swap speaker cables and try a different known-good speaker — if the fault follows the speaker, it\'s not the amp.']}
+    ]},
+  {id:'tk_line_array_coverage',title:'Line Array — One Box Weak/Silent or Uneven Coverage',keywords:['line array','uneven coverage','one box weak','array silent','hollow midrange'],
+    methods:[
+      {title:'Isolate the box',steps:['Route a known test signal (phone, tone generator) through the system and listen box by box — a single weak or silent element usually points to that box\'s wiring, connector, or internal driver rather than the whole system.','Check wiring polarity at that box\'s connector — a reversed polarity on one element causes cancellation in overlapping coverage areas, which sounds like "uneven" or "hollow" coverage rather than a clean dropout.']},
+      {title:'Amplifier/DSP channel swap',steps:['For passive arrays, swap the suspect box to a different, known-good amplifier channel — if the fault follows the box, it\'s the box; if it stays on that channel, it\'s the amp or DSP output.','For active/powered arrays, check that box\'s network connection and firmware status — communication glitches on active elements are sometimes cleared by a firmware reflash or power cycle.']},
+      {title:'Distortion vs. coverage issues',steps:['Amplifier clipping (crunchy/buzzy distortion) means reduce input gain/trim, not just turn down the output.','A hollow or thin midrange across a section of the room (not a single dead box) suggests a phase/timing misalignment between elements rather than a hardware fault — this needs re-checking delay/EQ presets, not cable swapping.']}
+    ]},
   {id:'tk_mic_dropout',title:'Wireless Microphone — Dropout / Interference',keywords:['wireless mic','microphone dropout','mic cutting out','interference','static','crackling mic'],
     methods:[
-      {title:'Line of sight & distance',steps:['Move closer to the receiver or reposition to remove obstructions (walls, metal, bodies) between mic and receiver.','Keep antennas vertical and away from metal racks.']},
-      {title:'Frequency conflict',steps:['Re-scan for a clear frequency on the receiver.','Check for other wireless systems (other mics, in-ear monitors, WiFi) on nearby frequencies and change channel/group.']},
-      {title:'Battery & hardware',steps:['Replace batteries — low battery causes dropout before it dies completely.','Check the mic capsule/connector for looseness.']}
+      {title:'Confirm it\'s actually RF interference (Shure/Sennheiser squelch test)',steps:['Turn the transmitter OFF and watch the receiver\'s RF/signal meter — if it still shows RF activity with the transmitter off, an outside source is on your frequency.','With the transmitter off, slowly raise the squelch setting until the "no signal" indicator shows, then back it off slightly past that point — this filters weak interference without cutting your real signal.','If a clean "no signal" state can\'t be reached even at high squelch, that frequency itself is compromised — rescan for a new one.']},
+      {title:'Line of sight & multi-path',steps:['Move closer to the receiver or remove obstructions (walls, metal, bodies) between mic and receiver.','Multi-path (reflected RF arriving out of phase) causes dropouts especially indoors — walk the full performance area with the mic while watching the receiver meter to find dead spots before the show.','Keep antennas vertical, not touching metal racks, and use true diversity receivers (two antennas) where available — this is standard on professional systems specifically to reduce multi-path nulls.']},
+      {title:'Frequency conflict / intermodulation',steps:['Re-scan for a clear frequency on the receiver — do this in the actual venue, since RF conditions change location to location and even hour to hour.','With multiple wireless systems, use a frequency coordination pass (not just individually scanning each one) so units don\'t generate intermodulation products that jam each other.']},
+      {title:'Other interference sources',steps:['Active LED video walls generate measurable RF noise/EMI, especially once an image is displayed — keep wireless receivers and antennas away from LED wall processors and cabling where possible.','Battery level matters — a weakening battery causes dropout before it fully dies, so treat "intermittent mic" as a battery-swap-first troubleshooting step.']}
     ]},
   {id:'tk_feedback',title:'Audio Feedback (Squeal/Howl)',keywords:['feedback','squeal','howling','ringing sound'],
     methods:[
@@ -4251,6 +4377,12 @@ const TROUBLESHOOTING_KB=[
       {title:'Basic checks',steps:['Confirm channel isn\'t muted, faded down, or routed to the wrong bus/output.','Check gain/trim isn\'t at zero.','Confirm phantom power (48V) is on if using a condenser mic/DI that needs it.']},
       {title:'Swap test',steps:['Move the same source to a different known-working channel — if it works there, the original channel or its input jack is faulty.']},
       {title:'Cable/connector',steps:['Try a different cable and a different input type (XLR vs 1/4") if the channel supports both.']}
+    ]},
+  {id:'tk_digital_mixer_no_input',title:'Digital Mixer — Multiple Channels Show No Signal (Networked/Dante)',keywords:['digital mixer no signal','dante','network audio','multiple channels dead','input patch'],
+    methods:[
+      {title:'Check the input patch first',steps:['On digital consoles, a channel\'s physical fader can be fine while its input patch points to the wrong source — confirm each channel is patched to the correct local input or Dante/network channel, not left on a default that doesn\'t match your physical connections.','If several channels went dead at once, this is the most likely cause — a snake or network patch change elsewhere silently re-routes multiple channels at the same time.']},
+      {title:'Check for a mis-patched insert',steps:['If a single channel or the main output has no signal despite correct routing, confirm any digital insert (compressor/gate plugin, effects loop) has both its send and return properly assigned — a broken insert patch silently kills that channel.']},
+      {title:'Network-specific checks',steps:['For Dante/AVB-networked stageboxes, confirm IP addressing and clock sync settings match across all devices — a clock or subnet mismatch causes clean-looking connections to pass no audio.']}
     ]},
   {id:'tk_di_hum',title:'DI Box / Cable Hum or Buzz',keywords:['hum','buzz','ground loop','di box noise'],
     methods:[
@@ -4279,10 +4411,11 @@ const TROUBLESHOOTING_KB=[
       {title:'Power source',steps:['Try a different battery — swap in a known-charged one.','If on external power, check the power brick and cable for damage.']},
       {title:'Physical checks',steps:['Check the battery contacts and door latch for debris or damage.','Try a hard reset if the camera supports one (remove battery for 30s, or the manufacturer\'s reset combo).']}
     ]},
-  {id:'tk_hdmi_no_signal',title:'HDMI Cable — No Signal / Flickering',keywords:['hdmi','no signal','flickering','hdmi not working'],
+  {id:'tk_hdmi_no_signal',title:'HDMI Cable / Matrix Switcher — No Signal, Flickering, or HDCP Error',keywords:['hdmi','no signal','flickering','hdmi not working','matrix switcher','hdcp error','edid'],
     methods:[
-      {title:'Basic swap test',steps:['Try a different HDMI cable — HDMI cables fail more than people expect, especially long runs.','Try a shorter cable to rule out cable-length signal loss.']},
-      {title:'Handshake reset',steps:['Unplug the HDMI cable from the display, wait 5 seconds, replug — this forces a fresh EDID handshake.','Power cycle the source device.']}
+      {title:'Basic swap test',steps:['Try a different HDMI cable — HDMI cables fail more than people expect, especially long runs.','Try a shorter cable to rule out cable-length signal loss, and test the source connected directly to the display, bypassing any switcher/extender, to isolate which device is at fault.']},
+      {title:'Correct power-up sequence (fixes most handshake failures)',steps:['Power everything off at the source.','Power on any switchers/extenders/distribution amps first.','Power on the display(s) next, and manually select the correct HDMI input.','Power on the source device last — this order lets each device correctly read EDID and negotiate HDCP down the chain, which is the single most common fix for "flashes on then goes black" symptoms.']},
+      {title:'EDID / HDCP specifics',steps:['If a matrix switcher shows video to one display but not another, the higher-resolution display\'s EDID may be forcing an unsupported mode on the weaker one — check the switcher\'s EDID management/copy settings.','An HDCP failure usually shows as a black screen or brief flash-then-drop, distinct from a simple no-signal — if only one specific display in a chain fails, that display or its cable is the most likely non-compliant link.','Turn off any unnecessary "deep color" settings on source devices — legacy displays/switchers often can\'t negotiate it, and it eats HDMI bandwidth for no visible benefit in most setups.']}
     ]},
   {id:'tk_power_breaker_trip',title:'Extension Cord / Power Strip Trips Breaker',keywords:['breaker trip','power tripping','extension cord','circuit overload'],
     methods:[
@@ -4298,6 +4431,57 @@ const TROUBLESHOOTING_KB=[
     methods:[
       {title:'Basic checks',steps:['Confirm both radios are on the same channel and privacy/CTCSS code.','Check battery level — range drops noticeably as batteries weaken.']},
       {title:'Environment',steps:['Move away from large metal structures or below-grade areas that block signal.','If indoors in a large venue, range may simply be limited by walls — reposition or add a repeater if available.']}
+    ]},
+  {id:'tk_moving_head_unresponsive',title:'Moving Head / Lighting Fixture Not Responding',keywords:['moving head','lighting fixture','light not responding','dmx fixture stuck'],
+    methods:[
+      {title:'DMX chain basics',steps:['Confirm the DMX cable is seated in/out (data in vs data out matters — a reversed cable looks identical but passes nothing).','Check the fixture\'s DMX address matches what the console/software expects.','Terminate the last fixture in the chain with a DMX terminator if the run is long or unreliable.']},
+      {title:'Reset the fixture',steps:['Power cycle the individual fixture — many moving heads lock up and need a hard reset independent of the rest of the rig.','Check for a physical reset/home button on the fixture itself.']}
+    ]},
+  {id:'tk_dmx_flicker',title:'DMX Lighting — Flickering or Erratic Behavior',keywords:['dmx flicker','lighting flicker','erratic lighting','dmx glitch'],
+    methods:[
+      {title:'Cable & termination',steps:['Use proper 3-pin or 5-pin DMX cable, not a lookalike mic cable — wiring differences cause exactly this symptom.','Add a terminator at the end of the DMX chain.']},
+      {title:'Address conflicts',steps:['Check for duplicate DMX addresses between fixtures on the same universe.','Split into multiple universes if you\'re running many fixtures off one line.']}
+    ]},
+  {id:'tk_networked_dsp_issues',title:'Networked DSP / Conferencing System — Device Not Communicating',keywords:['dsp not communicating','q-sys','biamp','networked dsp','device offline','control system unresponsive'],
+    methods:[
+      {title:'Power & physical connections',steps:['Confirm the power LED is lit — try a different outlet/cable to rule out a supply issue before assuming it\'s a config problem.','Verify all network and audio cables are fully seated at both the DSP and connected devices (amplifiers, network switches, control panels).']},
+      {title:'Network-level checks',steps:['Confirm every device has a unique network ID/name — duplicate IDs are a common, easy-to-miss cause of devices refusing to communicate.','Check the network switch and PoE budget if devices are PoE-powered — an overloaded switch can silently drop devices under load.','If on a shared network, put AV control traffic on its own VLAN to avoid congestion from unrelated traffic.']},
+      {title:'Software-side reset',steps:['Re-deploy the current design/config file to the DSP core — a stale or partially-applied config is a common cause of "looks fine but doesn\'t respond."','If a factory reset was performed, the design file needs to be re-uploaded — the unit won\'t recover its programming on its own.']}
+    ]},
+  {id:'tk_rigging_safety_check',title:'Truss / Rigging — Pre-Show Safety Check',keywords:['truss','rigging','safety check','hanging points','motor'],
+    methods:[
+      {title:'Before anything goes up',steps:['Verify weight ratings on all motors/hoists match the actual hung load, with margin — electric chain hoists used in entertainment fall under ANSI E1.6, aluminum truss/towers under ANSI E1.2.','Inspect all shackles, pins, and safety cables — a secondary safety (independent of the primary connection) is required on every hang point, no exceptions, per standard rigging practice (ANSI ES1.18 Event Safety — Rigging).','Confirm the venue\'s hanging points are rated for the load — never assume; ask the venue for documentation before committing weight to their structure.','Custom-built lifting clamps or hardware should be proof-tested to twice the rated capacity in the direction of the lift before being trusted with a real load.']},
+      {title:'During load-in',steps:['Keep the area below any rigging clear of foot traffic while trussing is being raised, and make sure every worker on site knows when overhead rigging work is in progress.','Recheck all connections after the initial raise, before adding fixtures or cable weight — loads shift slightly under initial tension.','Anyone working at height needs a documented fall-arrest plan (and rescue plan) that meets ANSI Z359/E1.39 — this isn\'t optional paperwork, it\'s there because a fall-arrest system with no rescue plan can itself become dangerous if someone is left suspended.']}
+    ]},
+  {id:'tk_wifi_venue_issues',title:'Venue WiFi / Network Drops',keywords:['wifi','network drop','internet down','venue network','streaming connection'],
+    methods:[
+      {title:'Basic checks',steps:['Confirm the venue\'s network credentials weren\'t rotated day-of — many venues reset guest WiFi daily.','Test with a wired connection if the venue has ethernet drops available — far more reliable than WiFi for anything mission-critical.']},
+      {title:'Bring your own backup',steps:['Use a cellular hotspot/MiFi as backup internet for anything that can\'t afford downtime (streaming, card payments, ticketing).','Position your own router/access point centrally if relying on your own network gear.']}
+    ]},
+  {id:'tk_stream_encoder_issues',title:'Live Stream — Encoder Drops / Won\'t Connect',keywords:['stream drop','encoder','streaming issue','obs disconnect','rtmp'],
+    methods:[
+      {title:'Connection basics',steps:['Verify the stream key/RTMP URL hasn\'t expired or been regenerated on the platform side.','Lower your bitrate — most dropped-stream issues are the upload bandwidth not sustaining the configured bitrate, not the software.']},
+      {title:'Hardware/software reset',steps:['Restart the encoder software or hardware encoder — a stuck buffer is common after long runtimes.','Switch to a wired connection if currently on WiFi.']}
+    ]},
+  {id:'tk_battery_wont_charge',title:'Equipment Battery Won\'t Charge',keywords:['battery wont charge','not charging','dead battery','charging issue'],
+    methods:[
+      {title:'Basic checks',steps:['Try a different charging cable and outlet — cheap or damaged cables are the most common cause.','Check the battery contacts on both the battery and the device for corrosion or debris.']},
+      {title:'Battery health',steps:['If the battery is old (heavily cycled), it may simply be at end of life — test with a known-good replacement battery to confirm.','Never charge a battery that\'s visibly swollen — tag it damaged/unusable and remove from service.']}
+    ]},
+  {id:'tk_cable_intermittent',title:'Cable Connection Intermittent / Cutting In and Out',keywords:['intermittent','cutting in and out','loose connection','cable fault'],
+    methods:[
+      {title:'Isolate it',steps:['Wiggle-test the cable at both ends while monitoring signal — a fault will usually reveal itself at a specific point.','Swap the full cable with a known-good spare rather than trying to repair on-site during a live show.']},
+      {title:'After the show',steps:['Tag any intermittent cable as damaged immediately so it doesn\'t get re-racked as good stock.']}
+    ]},
+  {id:'tk_power_distro_voltage',title:'Power Distribution — Voltage Drop / Dimming Lights Under Load',keywords:['voltage drop','dimming under load','power distro','brownout'],
+    methods:[
+      {title:'Load balancing',steps:['Spread high-draw equipment across multiple circuits/phases instead of stacking it all on one run.','Use appropriately-gauged cable for the run length — long thin cable runs cause voltage drop under load.']},
+      {title:'Confirm supply',steps:['Verify the venue\'s supplied power matches what was promised (correct voltage, amperage, phase) before committing to your full rig.']}
+    ]},
+  {id:'tk_labeling_cable_mgmt',title:'Cable Management & Labeling Best Practice',keywords:['cable management','labeling','cable organization'],
+    methods:[
+      {title:'On load-in',steps:['Label both ends of every cable run with source and destination before it goes under gaffer tape or through a wall.','Use consistent color-coded tape per system (audio/video/power/lighting) so any tech can trace a run at a glance.']},
+      {title:'On load-out',steps:['Coil cables using the over-under technique to avoid kinks that cause internal damage over time.','Inspect connectors for bent pins while coiling — catch damage before it\'s re-racked.']}
     ]}
 ];
 // Very light keyword-overlap scoring — no external libraries, works fully offline.
@@ -4353,6 +4537,51 @@ function addToKnowledgeCache(query,answer){
   cache.unshift({id:uid(),org:CU.org,query,words:normalizeForCache(query),answer,ts:ts()});
   if(cache.length>300) cache.length=300; // keep this from growing unbounded
   saveKnowledgeCache(cache);
+}
+function deleteFromKnowledgeCache(id){
+  const cache=getKnowledgeCache().filter(e=>e.id!==id);
+  saveKnowledgeCache(cache);
+}
+function addToKnowledgeCacheManual(query,answer){
+  const cache=getKnowledgeCache();
+  cache.unshift({id:uid(),org:CU.org,query,words:normalizeForCache(query),answer,ts:ts(),curated:true,addedBy:CU.firstname||CU.username});
+  if(cache.length>300) cache.length=300;
+  saveKnowledgeCache(cache);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  FEED AI KNOWLEDGE — dashboard tool for pre-loading answers so the
+//  AI never needs an API call for anything you've already told it.
+// ══════════════════════════════════════════════════════════════
+function openFeedKnowledge(){
+  $('fk-question').value=''; $('fk-answer').value='';
+  openSheet('sh-feed-knowledge');
+}
+function saveFeedKnowledge(){
+  const q=$('fk-question').value.trim(); const a=$('fk-answer').value.trim();
+  if(!q||!a){ toast('Both fields are required.'); return; }
+  addToKnowledgeCacheManual(q,a);
+  addLog('system',`AI knowledge added: ${q}`,`By ${CU.firstname||CU.username}`);
+  toast('✅ Saved — the AI will use this instantly, offline.');
+  closeSheet('sh-feed-knowledge');
+  renderAIKnowledgeList();
+}
+function renderAIKnowledgeList(){
+  const wrap=$('ai-knowledge-list'); if(!wrap)return;
+  const cache=getKnowledgeCache().filter(e=>e.org===CU?.org).sort((a,b)=>b.ts-a.ts);
+  if(!cache.length){ wrap.innerHTML='<div class="empty"><div class="empty-icon">🧠</div><div class="empty-text">No knowledge saved yet</div></div>'; return; }
+  wrap.innerHTML='';
+  cache.slice(0,50).forEach(e=>{
+    const div=el('div','card');
+    div.style.marginBottom='8px';
+    div.innerHTML=`<div class="flex jc-between ic-center"><span class="fw7 text-sm">${e.curated?'✍️ ':'🔎 '}${e.query}</span><span class="text-xs text-muted">${fmtDate(e.ts)}</span></div>
+      <div class="text-sm mt-4" style="color:var(--g600);">${e.answer.length>200?e.answer.slice(0,200)+'…':e.answer}</div>
+      ${e.curated?`<div class="text-xs text-muted mt-4">Added by ${e.addedBy||'—'}</div>`:`<div class="text-xs text-muted mt-4">Auto-learned from an AI lookup</div>`}`;
+    const rm=el('button','btn btn-danger btn-sm mt-8','🗑 Remove');
+    rm.onclick=async()=>{ const ok=await iqConfirm('Remove this saved knowledge entry?'); if(!ok)return; deleteFromKnowledgeCache(e.id); renderAIKnowledgeList(); toast('Removed.'); };
+    div.appendChild(rm);
+    wrap.appendChild(div);
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
