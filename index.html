@@ -755,6 +755,13 @@ input[type="file"].styled-file-input::file-selector-button{
     </div>
     <div class="form-row"><label class="form-lbl">Location *</label><input class="field" id="job-location" placeholder="Venue / address"></div>
     <div class="form-row">
+      <label class="form-lbl">Reuse Equipment From Another Job (optional)</label>
+      <select class="field" id="job-eq-reuse-select" onchange="applyReuseEquipmentFromJob(this.value); this.value='';">
+        <option value="">— Pick a job to pull its equipment list —</option>
+      </select>
+      <div class="text-xs text-muted mt-4">Adds that job's equipment to your list below — doesn't move any actual checked-out gear by itself. Use "Sign Equipment Back In → Transfer" on the other job once this one's ready to actually hand it over.</div>
+    </div>
+    <div class="form-row">
       <label class="form-lbl">Equipment Needed (from inventory)</label>
       <div class="search-wrap" style="margin:0 0 8px;"><span class="search-icon">🔍</span><input class="field" id="job-eq-search" placeholder="Search inventory to add…" oninput="renderJobEquipmentPicker()"></div>
       <div id="job-eq-list" style="max-height:180px;overflow-y:auto;border:1.5px solid var(--g200);border-radius:10px;padding:6px;"></div>
@@ -2839,6 +2846,29 @@ function toggleJobEqItem(itemId){
 function setJobEqQty(itemId,qty){
   jobEqPickerState.items.set(itemId,Math.max(1,parseInt(qty)||1));
 }
+// Populates the "Reuse Equipment From Another Job" dropdown with every other
+// job in the org that has at least one piece of linked equipment on it.
+function renderJobEqReuseOptions(excludeJobId){
+  const sel=$('job-eq-reuse-select'); if(!sel)return;
+  const jobs=getJobs().filter(j=>j.org===CU?.org&&j.id!==excludeJobId&&j.equipmentItems&&j.equipmentItems.length)
+    .sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  sel.innerHTML='<option value="">— Pick a job to pull its equipment list —</option>'+
+    jobs.map(j=>`<option value="${j.id}">${j.name} (${j.date})</option>`).join('');
+}
+// Merges the selected job's equipment into the current picker — only fills in
+// items not already chosen, so it never overwrites deliberate quantity edits.
+// This is a convenience prefill only; it does not move any actual checked-out
+// gear — that still happens through Sign Equipment Back In → Transfer.
+function applyReuseEquipmentFromJob(sourceJobId){
+  if(!sourceJobId) return;
+  const src=getJobs().find(j=>j.id===sourceJobId); if(!src||!src.equipmentItems)return;
+  let addedCount=0;
+  src.equipmentItems.forEach(ei=>{
+    if(!jobEqPickerState.items.has(ei.itemId)){ jobEqPickerState.items.set(ei.itemId,ei.qty); addedCount++; }
+  });
+  renderJobEquipmentPicker();
+  toast(addedCount?`✅ Added ${addedCount} item(s) from ${src.name}`:'Everything from that job is already in your list.');
+}
 function renderJobEquipmentPicker(){
   const q=($('job-eq-search')?.value||'').toLowerCase();
   const list=$('job-eq-list'); if(!list)return;
@@ -2879,6 +2909,7 @@ function openNewJobSheet(){
   $('job-all-hands').closest('.card').style.display=canDeclareAllHands()?'':'none';
   $('job-delete-btn').style.display='none';
   resetJobEqPicker();
+  renderJobEqReuseOptions('');
   openSheet('sh-add-job');
 }
 
@@ -2975,6 +3006,7 @@ function openEditJob(jobId){
   $('job-all-hands').closest('.card').style.display=canDeclareAllHands()?'':'none';
   $('job-delete-btn').style.display=canManageShifts()?'':'none';
   loadJobEqPicker(job);
+  renderJobEqReuseOptions(job.id);
   openSheet('sh-add-job');
 }
 
