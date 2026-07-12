@@ -1441,6 +1441,7 @@ async function confirmResetApp(){
 function launchApp(){
   hide('auth-screen'); $('auth-screen').style.display='none';
   $('app').classList.add('on');
+  initNotifAudio();
   updateHeader();
   renderDashboard();
   renderInv();
@@ -1595,7 +1596,55 @@ function updateHeader(){
   updateBadges();
 }
 
+// ══════════════════════════════════════════════════════════════
+//  NOTIFICATION SOUND — the toggles in Profile > Notifications were
+//  previously stored but never actually wired to anything. This plays
+//  a short chime for genuinely NEW alerts, gated by the person's own
+//  per-category preference (low stock / damaged / shift).
+// ══════════════════════════════════════════════════════════════
+let notifAudioCtx=null;
+let seenAlertIds=null; // null = not yet baselined (avoids a sound-storm on first load)
+function initNotifAudio(){
+  try{ if(!notifAudioCtx) notifAudioCtx=new (window.AudioContext||window.webkitAudioContext)(); }
+  catch(e){ /* Web Audio unavailable — sound just won't play, nothing else breaks */ }
+}
+function playNotifSound(){
+  try{
+    if(!notifAudioCtx) initNotifAudio();
+    if(!notifAudioCtx) return;
+    if(notifAudioCtx.state==='suspended') notifAudioCtx.resume();
+    const ctx=notifAudioCtx; const now=ctx.currentTime;
+    [880,1175].forEach((freq,i)=>{
+      const osc=ctx.createOscillator(); const gain=ctx.createGain();
+      osc.type='sine'; osc.frequency.value=freq;
+      const t0=now+i*0.12;
+      gain.gain.setValueAtTime(0.0001,t0);
+      gain.gain.exponentialRampToValueAtTime(0.22,t0+0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001,t0+0.2);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t0); osc.stop(t0+0.22);
+    });
+  }catch(e){}
+}
+// Maps an alert's type to the matching Profile > Notifications toggle.
+// Types without a dedicated toggle (system/request) always notify.
+function notifTypeEnabled(alertType){
+  const n=CU?.notifs||{};
+  if(alertType==='stock') return n.lowStock!==false;
+  if(alertType==='status') return n.damaged!==false;
+  if(alertType==='shift') return n.shift!==false;
+  return true;
+}
+function checkAndPlayAlertSound(){
+  const alerts=getAlerts();
+  if(seenAlertIds===null){ seenAlertIds=new Set(alerts.map(a=>a.id)); return; } // baseline only, no sound
+  const newOnes=alerts.filter(a=>!seenAlertIds.has(a.id));
+  if(newOnes.length && newOnes.some(a=>notifTypeEnabled(a.type))) playNotifSound();
+  seenAlertIds=new Set(alerts.map(a=>a.id));
+}
+
 function updateBadges(){
+  checkAndPlayAlertSound();
   const unread=getAlerts().filter(a=>!a.read).length;
   const ab=$('alert-badge'); const anb=$('alert-nav-badge');
   if(unread>0){ ab.textContent=unread; ab.classList.add('show'); anb.textContent=unread; anb.classList.add('show'); }
@@ -3913,7 +3962,7 @@ function openChatThread(threadId,name,isTeam,user){
   $('chat-list-view').style.display='none';
   $('chat-thread-view').style.display='flex';
   $('chat-thread-title').textContent=name;
-  $('chat-thread-sub').textContent=isTeam?`${getUsers().filter(u=>u.org===CU?.org).length} members`:(user?roleLabel(user.role):'');
+  $('chat-thread-sub').textContent=isTeam?`${getUsers().filter(u=>u.org===CU?.org).length} members`:(user&&isStaffRole(user.role)?roleLabel(user.role):'');
 
   // Mark messages in this thread as read by me
   const chat=getChat();
@@ -4639,7 +4688,7 @@ Role: ${roleLabel(CU?.role||'worker')}.
 Current inventory (${inv.length} items): ${inv.map(i=>`${i.name} (qty:${i.qty}, checked out:${i.checkedOut||0}, status:${i.status})`).join('; ')}.
 Active checkouts: ${cos.map(c=>`${c.itemName} x${c.qty} by ${c.userName}`).join('; ')||'none'}.
 Today's shifts: ${shifts.map(s=>{ const u=users.find(x=>x.id===s.userId); return `${u?.firstname||s.name} (${s.shift}${s.clockIn?', in '+fmtTime(s.clockIn):''}${s.clockOut?', out '+fmtTime(s.clockOut):''})`;}).join('; ')||'none scheduled'}.
-Team: ${users.map(u=>`${u.firstname||u.username} (${roleLabel(u.role)})`).join(', ')}.
+Team: ${users.map(u=>`${u.firstname||u.username} (${isStaffRole(u.role)?roleLabel(u.role):'Team Member'})`).join(', ')}.
 You have live web search available — use it for anything involving current info, specific equipment models/specs, or troubleshooting that benefits from up-to-date sources. Answer helpfully and conversationally.`;
 
   const typing=addAIMsg('bot','<div class="ai-typing"><span></span><span></span><span></span></div>');
