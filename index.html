@@ -1137,7 +1137,7 @@ function updateJobLog(jobId,mutator){
 }
 
 function addLog(type,msg,detail){ const l=getLog(); l.unshift({id:uid(),type,msg,detail,ts:ts()}); if(l.length>200)l.pop(); saveLog(l); }
-function addAlert(type,title,detail,itemId){ const a=getAlerts(); a.unshift({id:uid(),type,title,detail,itemId,ts:ts(),read:false}); saveAlerts(a); }
+function addAlert(type,title,detail,itemId,urgent){ const a=getAlerts(); a.unshift({id:uid(),type,title,detail,itemId,ts:ts(),read:false,urgent:!!urgent}); saveAlerts(a); }
 
 // Session is per-device only — not synced to cloud
 function getSession(){ return LS.get('iq_session'); }
@@ -1409,9 +1409,11 @@ async function doSignIn(){
           const fresh=getUsers().find(x=>x.id===CU.id);
           if(fresh) CU=fresh;
           updateHeader();
-          if(curPage==='dashboard') renderDashboard();
+          refreshAllViews();
+        } else {
+          toast('⚠️ Could not sync from the cloud — showing local data only. Check your connection.',5000);
         }
-      }).catch(()=>{});
+      }).catch(()=>{ toast('⚠️ Could not sync from the cloud — showing local data only. Check your connection.',5000); });
     }
   }finally{
     btn.textContent='Sign In'; btn.disabled=false;
@@ -1438,6 +1440,22 @@ async function confirmResetApp(){
 // ══════════════════════════════════════════════════════════════
 //  APP LAUNCH
 // ══════════════════════════════════════════════════════════════
+// Re-renders every page's data after a cloud pull completes — previously only
+// the Dashboard (and sometimes Inventory) refreshed, so a successful pull could
+// still look like "my data is gone" if you were sitting on Stock, Shifts, or Jobs.
+function refreshAllViews(){
+  renderDashboard();
+  renderInv();
+  renderShifts();
+  renderAlerts();
+  renderLog();
+  renderProfile();
+  renderChat();
+  if(curPage==='shifts'&&shiftsSubtab==='jobs') renderJobList();
+  if(curPage==='inventory'&&invSubtab==='status') renderEquipmentStatus();
+  updateBadges();
+}
+
 function launchApp(){
   hide('auth-screen'); $('auth-screen').style.display='none';
   $('app').classList.add('on');
@@ -1597,37 +1615,57 @@ function updateHeader(){
 }
 
 // ══════════════════════════════════════════════════════════════
-//  NOTIFICATION SOUND — the toggles in Profile > Notifications were
-//  previously stored but never actually wired to anything. This plays
-//  a short chime for genuinely NEW alerts, gated by the person's own
-//  per-category preference (low stock / damaged / shift).
+//  NOTIFICATIONS — sound + vibration, in two tiers:
+//  PRIORITY (requests, assignments, all-hands, chat messages) always
+//  fires, regardless of the person's toggle settings.
+//  OPTIONAL (low stock, damaged/status, shift reminders) respects the
+//  existing per-category toggles in Profile > Notifications.
+//
+//  Known ceiling: this only works while the tab is open and the screen
+//  is on — phones/browsers deliberately suspend background JS (audio
+//  included) once the screen locks or the app is backgrounded, to save
+//  battery. True background/locked-screen alerts need real push
+//  notifications (a service worker + push server), which this plain
+//  web app doesn't have. Nothing in this function can bypass that.
 // ══════════════════════════════════════════════════════════════
+const PRIORITY_ALERT_TYPES=['request','assignment','allhands'];
 let notifAudioCtx=null;
 let seenAlertIds=null; // null = not yet baselined (avoids a sound-storm on first load)
+let seenChatCount=null; // same idea, for chat messages
+
 function initNotifAudio(){
-  try{ if(!notifAudioCtx) notifAudioCtx=new (window.AudioContext||window.webkitAudioContext)(); }
-  catch(e){ /* Web Audio unavailable — sound just won't play, nothing else breaks */ }
-}
-function playNotifSound(){
   try{
-    if(!notifAudioCtx) initNotifAudio();
-    if(!notifAudioCtx) return;
+    if(!notifAudioCtx||notifAudioCtx.state==='closed') notifAudioCtx=new (window.AudioContext||window.webkitAudioContext)();
     if(notifAudioCtx.state==='suspended') notifAudioCtx.resume();
+  }catch(e){ /* Web Audio unavailable — sound just won't play, nothing else breaks */ }
+}
+function vibrateDevice(pattern){
+  try{ if(navigator.vibrate) navigator.vibrate(pattern); }
+  catch(e){} // iOS Safari has never supported the Vibration API — silently no-ops there
+}
+// urgent=true plays a longer, more insistent tone + stronger vibration.
+function playNotifSound(urgent){
+  try{
+    initNotifAudio(); // defensively re-check/resume every time — mobile browsers
+                       // suspend audio contexts aggressively when backgrounded
+    if(!notifAudioCtx) return;
     const ctx=notifAudioCtx; const now=ctx.currentTime;
-    [880,1175].forEach((freq,i)=>{
+    const tones=urgent?[880,1175,880,1175]:[880,1175];
+    tones.forEach((freq,i)=>{
       const osc=ctx.createOscillator(); const gain=ctx.createGain();
       osc.type='sine'; osc.frequency.value=freq;
       const t0=now+i*0.12;
       gain.gain.setValueAtTime(0.0001,t0);
-      gain.gain.exponentialRampToValueAtTime(0.22,t0+0.02);
+      gain.gain.exponentialRampToValueAtTime(urgent?0.3:0.22,t0+0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001,t0+0.2);
       osc.connect(gain); gain.connect(ctx.destination);
       osc.start(t0); osc.stop(t0+0.22);
     });
+    vibrateDevice(urgent?[200,100,200,100,300]:[120]);
   }catch(e){}
 }
-// Maps an alert's type to the matching Profile > Notifications toggle.
-// Types without a dedicated toggle (system/request) always notify.
+// Maps an alert's type to the matching Profile > Notifications toggle —
+// only applies to the OPTIONAL tier; priority types always notify.
 function notifTypeEnabled(alertType){
   const n=CU?.notifs||{};
   if(alertType==='stock') return n.lowStock!==false;
@@ -1635,16 +1673,33 @@ function notifTypeEnabled(alertType){
   if(alertType==='shift') return n.shift!==false;
   return true;
 }
+function isPriorityAlert(a){ return a.urgent===true||PRIORITY_ALERT_TYPES.includes(a.type); }
 function checkAndPlayAlertSound(){
   const alerts=getAlerts();
   if(seenAlertIds===null){ seenAlertIds=new Set(alerts.map(a=>a.id)); return; } // baseline only, no sound
   const newOnes=alerts.filter(a=>!seenAlertIds.has(a.id));
-  if(newOnes.length && newOnes.some(a=>notifTypeEnabled(a.type))) playNotifSound();
+  if(newOnes.length){
+    const anyPriority=newOnes.some(isPriorityAlert);
+    const anyOptionalEnabled=newOnes.some(a=>!isPriorityAlert(a)&&notifTypeEnabled(a.type));
+    if(anyPriority) playNotifSound(true);
+    else if(anyOptionalEnabled) playNotifSound(false);
+  }
   seenAlertIds=new Set(alerts.map(a=>a.id));
+}
+// Chat messages are priority — always sound + vibrate for new incoming
+// messages from someone else, regardless of toggle settings.
+function checkAndPlayChatSound(){
+  if(!CU) return;
+  const chat=getChat();
+  const relevant=chat.filter(m=>m.userId!==CU.id&&(m.threadId==='team'||m.threadId===dmThreadId(CU.id,m.userId)));
+  if(seenChatCount===null){ seenChatCount=relevant.length; return; }
+  if(relevant.length>seenChatCount) playNotifSound(true);
+  seenChatCount=relevant.length;
 }
 
 function updateBadges(){
   checkAndPlayAlertSound();
+  checkAndPlayChatSound();
   const unread=getAlerts().filter(a=>!a.read).length;
   const ab=$('alert-badge'); const anb=$('alert-nav-badge');
   if(unread>0){ ab.textContent=unread; ab.classList.add('show'); anb.textContent=unread; anb.classList.add('show'); }
@@ -2891,6 +2946,8 @@ function decideOffDayRequest(reqId,decision){
   saveOffDayRequests(reqs);
   const u=getUsers().find(x=>x.id===reqs[i].userId);
   addLog('shift',`Off-day ${decision}: ${u?.firstname||'worker'}`,`${reqs[i].day} · by ${CU.firstname||CU.username}`);
+  addAlert('assignment',`${decision==='approved'?'✅':'✕'} Off-Day ${decision==='approved'?'Approved':'Denied'} — ${reqs[i].day}`,`${u?.firstname||'Your'} request decided by ${CU.firstname||CU.username}`,null,true);
+  updateBadges();
   toast(decision==='approved'?'✅ Approved':'Denied');
   renderScheduleTab();
 }
@@ -3108,9 +3165,12 @@ function saveJob(){
   saveJobs(jobs);
 
   // Newly declared all-hands → log a disruption note + owed-day credit for
-  // any staff whose normal off-day/on-call status this date would override.
+  // any staff whose normal off-day/on-call status this date would override,
+  // plus an actual priority alert (previously this was completely silent).
   if(nowAllHands&&!wasAllHands){
     applyAllHandsDisruption(date,endDate||date,name);
+    addAlert('allhands',`🚨 All Hands On Deck — ${name}`,`${isMultiDay?date+' – '+endDate:date} · Every staff member is needed for this job.`,null,true);
+    updateBadges();
   }
 
   toast(editId?'✅ Job updated!':'✅ Job scheduled!');
@@ -3854,7 +3914,7 @@ async function sendQuickStatus(t){
   const jobTag=job?` — ${job.name}`:'';
   const title=`${t.emoji} ${t.label}${jobTag}`;
   const detail=`${who}${note?': '+note:''}`;
-  addAlert(t.urgent?'status':'shift',title,detail,null);
+  addAlert(t.urgent?'status':'shift',title,detail,null,t.urgent);
   addLog('shift',`${t.label}${jobTag}`,`${who}${note?' — '+note:''}`);
   updateBadges();
   toast(`✅ Sent: ${t.label}`);
@@ -4066,7 +4126,7 @@ function alertCard(a,compact){
 
 function submitRequest(){
   const name=$('req-name').value.trim(); if(!name){toast('Item name required.');return;}
-  addAlert('request',`Equipment Request: ${name}`,`${$('req-reason').value} · Qty: ${$('req-qty').value}${$('req-notes').value?' · '+$('req-notes').value:''}`,null);
+  addAlert('request',`Equipment Request: ${name}`,`${$('req-reason').value} · Qty: ${$('req-qty').value}${$('req-notes').value?' · '+$('req-notes').value:''}`,null,true);
   addLog('request',`Request submitted: ${name}`,`By ${CU.firstname||CU.username}`);
   toast('✅ Request sent to admin!'); closeSheet('sh-request'); updateBadges();
   $('req-name').value=''; $('req-notes').value=''; $('req-qty').value=1;
@@ -4767,10 +4827,11 @@ async function revealAuthOrApp(){
               const fresh=getUsers().find(x=>x.id===sid);
               if(fresh) CU=fresh;
               updateHeader();
-              if(curPage==='dashboard') renderDashboard();
-              if(curPage==='inventory') renderInv();
+              refreshAllViews();
+            } else {
+              toast('⚠️ Could not sync from the cloud — showing local data only. Check your connection.',5000);
             }
-          }).catch(()=>{});
+          }).catch(()=>{ toast('⚠️ Could not sync from the cloud — showing local data only. Check your connection.',5000); });
         }
         return;
       }
