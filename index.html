@@ -970,6 +970,96 @@ function initSupabase(){
   sbReady=typeof fetch!=='undefined';
 }
 
+// ══════════════════════════════════════════════════════════════
+//  PUSH NOTIFICATIONS — real background alerts, via a Service Worker +
+//  Web Push. Works while the app is closed or the phone is locked, on
+//  browsers that support it. Known gaps (can't be fixed from JS):
+//  - iOS Safari only supports this if the site is added to the Home
+//    Screen (Share > Add to Home Screen) AND iOS 16.4+.
+//  - Inside an AppGeyser-style native WebView wrapper, this generally
+//    does NOT work at all unless the wrapper has its own native push
+//    SDK — a plain WebView has no access to the browser's push service.
+// ══════════════════════════════════════════════════════════════
+const VAPID_PUBLIC_KEY='BJ1WSVCoELP-jQPXE1wO46GYR9LMQiEYat5zOw0zd7UK6MVBmlK_-TuAyrHFue-un5zId3_1G8a8VmpzajoZV_A';
+
+function urlBase64ToUint8Array(base64String){
+  const padding='='.repeat((4-base64String.length%4)%4);
+  const base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/');
+  const rawData=atob(base64);
+  const out=new Uint8Array(rawData.length);
+  for(let i=0;i<rawData.length;++i) out[i]=rawData.charCodeAt(i);
+  return out;
+}
+
+async function registerServiceWorker(){
+  if(!('serviceWorker' in navigator)) return null;
+  try{ return await navigator.serviceWorker.register('./sw.js'); }
+  catch(e){ console.warn('SW registration failed:',e.message); return null; }
+}
+
+function pushSupported(){
+  return 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
+}
+
+async function enablePushNotifications(){
+  if(!pushSupported()){
+    toast('⚠️ Push notifications aren\'t supported in this browser/app wrapper.',5000);
+    return;
+  }
+  const perm=await Notification.requestPermission();
+  if(perm!=='granted'){ toast('Notifications blocked — enable them in your browser or site settings.'); return; }
+  const reg=await registerServiceWorker();
+  if(!reg){ toast('⚠️ Could not set up the notification service. Try again.'); return; }
+  try{
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub){
+      sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(VAPID_PUBLIC_KEY)});
+    }
+    const subJson=sub.toJSON();
+    await fetch(`${SB_URL}/rest/v1/push_subscriptions`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Prefer':'resolution=merge-duplicates,return=minimal'},
+      body:JSON.stringify({org:CU.org,user_id:CU.id,endpoint:subJson.endpoint,keys:subJson.keys,updated_at:new Date().toISOString()})
+    });
+    CU.pushEnabled=true; updateUser(CU);
+    toast('✅ Push notifications enabled on this device!');
+    renderProfile();
+  }catch(e){
+    toast('⚠️ Could not enable push notifications: '+e.message,5000);
+  }
+}
+
+async function disablePushNotifications(){
+  try{
+    const reg=await navigator.serviceWorker.getRegistration();
+    if(reg){
+      const sub=await reg.pushManager.getSubscription();
+      if(sub){
+        await fetch(`${SB_URL}/rest/v1/push_subscriptions?endpoint=eq.${encodeURIComponent(sub.endpoint)}`,{
+          method:'DELETE',headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY}
+        }).catch(()=>{});
+        await sub.unsubscribe();
+      }
+    }
+  }catch(e){}
+  CU.pushEnabled=false; updateUser(CU);
+  toast('🔕 Push notifications disabled on this device.');
+  renderProfile();
+}
+
+// Fire-and-forget call to the send-push Edge Function. Never blocks the
+// calling action if it fails — push is a bonus channel, not a dependency.
+async function sendPushNotification(opts){
+  if(!navigator.onLine||!sbReady) return;
+  try{
+    await fetch(`${SB_URL}/functions/v1/send-push`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY},
+      body:JSON.stringify(opts)
+    });
+  }catch(e){ console.warn('sendPushNotification failed:',e.message); }
+}
+
 // ── Offline sync queue ──
 // If a push fails (no connection, DNS blocked, etc.) the write already
 // succeeded locally (LS.set already ran in sbSave before this is called) —
@@ -2948,6 +3038,7 @@ function decideOffDayRequest(reqId,decision){
   addLog('shift',`Off-day ${decision}: ${u?.firstname||'worker'}`,`${reqs[i].day} · by ${CU.firstname||CU.username}`);
   addAlert('assignment',`${decision==='approved'?'✅':'✕'} Off-Day ${decision==='approved'?'Approved':'Denied'} — ${reqs[i].day}`,`${u?.firstname||'Your'} request decided by ${CU.firstname||CU.username}`,null,true);
   updateBadges();
+  if(u) sendPushNotification({org:CU.org,title:`${decision==='approved'?'✅':'✕'} Off-Day ${decision==='approved'?'Approved':'Denied'}`,body:`${reqs[i].day} — decided by ${CU.firstname||CU.username}`,urgent:true,tag:'invos-assignment',targetUserId:u.id});
   toast(decision==='approved'?'✅ Approved':'Denied');
   renderScheduleTab();
 }
@@ -3171,6 +3262,7 @@ function saveJob(){
     applyAllHandsDisruption(date,endDate||date,name);
     addAlert('allhands',`🚨 All Hands On Deck — ${name}`,`${isMultiDay?date+' – '+endDate:date} · Every staff member is needed for this job.`,null,true);
     updateBadges();
+    sendPushNotification({org:CU.org,title:`🚨 All Hands On Deck — ${name}`,body:`${isMultiDay?date+' – '+endDate:date} · Every staff member is needed.`,urgent:true,tag:'invos-allhands',excludeUserId:CU.id});
   }
 
   toast(editId?'✅ Job updated!':'✅ Job scheduled!');
@@ -4076,6 +4168,15 @@ function sendChat(){
   const msg={id:uid(),threadId:activeThreadId,userId:CU.id,username:CU.username,name:CU.firstname||CU.username,text,ts:ts(),photo:CU.photo||'',readBy:[CU.id]};
   const chat=getChat(); chat.push(msg); saveChat(chat);
   inp.value=''; renderThreadMessages(); updateBadges();
+
+  const senderName=CU.firstname||CU.username;
+  const preview=text.length>80?text.slice(0,80)+'…':text;
+  if(activeThreadId==='team'){
+    sendPushNotification({org:CU.org,title:`💬 ${senderName} (Team Chat)`,body:preview,tag:'invos-chat-team',excludeUserId:CU.id});
+  } else {
+    const otherUser=getUsers().find(u=>u.org===CU.org&&u.id!==CU.id&&dmThreadId(CU.id,u.id)===activeThreadId);
+    if(otherUser) sendPushNotification({org:CU.org,title:`💬 ${senderName}`,body:preview,tag:'invos-chat-'+activeThreadId,targetUserId:otherUser.id});
+  }
 }
 
 // Total unread across all threads (team channel + my DMs), used for the nav badge
@@ -4127,6 +4228,7 @@ function alertCard(a,compact){
 function submitRequest(){
   const name=$('req-name').value.trim(); if(!name){toast('Item name required.');return;}
   addAlert('request',`Equipment Request: ${name}`,`${$('req-reason').value} · Qty: ${$('req-qty').value}${$('req-notes').value?' · '+$('req-notes').value:''}`,null,true);
+  sendPushNotification({org:CU.org,title:`📬 Equipment Request: ${name}`,body:`${CU.firstname||CU.username} needs ${$('req-qty').value}x ${name}`,urgent:true,tag:'invos-request',excludeUserId:CU.id});
   addLog('request',`Request submitted: ${name}`,`By ${CU.firstname||CU.username}`);
   toast('✅ Request sent to admin!'); closeSheet('sh-request'); updateBadges();
   $('req-name').value=''; $('req-notes').value=''; $('req-qty').value=1;
@@ -4222,6 +4324,16 @@ function renderProfile(){
 
   // Notif toggles
   const nt=$('notif-toggles'); nt.innerHTML='';
+
+  // Push notification enable/disable — the actual background-alert switch
+  const pushRow=el('div','toggle-row');
+  const pushOn=!!CU?.pushEnabled;
+  pushRow.innerHTML=`<div><div class="toggle-label">Push Notifications (works when app is closed)</div><div class="toggle-sub">${pushSupported()?'Priority alerts reach this device even when InvOS isn\'t open.':'Not supported in this browser/app — try Chrome or Safari (iOS: Add to Home Screen first).'}</div></div>`;
+  const pushBtn=el('button','toggle'+(pushOn?' on':''),'<div class="toggle-thumb"></div>');
+  pushBtn.disabled=!pushSupported();
+  pushBtn.onclick=()=>{ if(pushBtn.classList.contains('on')) disablePushNotifications(); else enablePushNotifications(); };
+  pushRow.appendChild(pushBtn); nt.appendChild(pushRow);
+
   const notifDefs=[{k:'lowStock',l:'Low Stock Alerts',s:'Notify when items run low'},{k:'damaged',l:'Damaged Item Alerts',s:'Notify on status changes'},{k:'shift',l:'Shift Reminders',s:'Clock in/out reminders'}];
   notifDefs.forEach(n=>{
     const on=CU?.notifs?.[n.k]!==false;
@@ -4805,6 +4917,7 @@ function initApp(){
   try{ initSupabase(); }catch(e){ console.warn('Supabase init error:',e); }
   try{ bootstrap(); }catch(e){ console.error('Bootstrap failed:',e); }
   try{ updateSyncBadge(); flushPendingSync(); }catch(e){ console.warn('Sync badge init failed:',e); }
+  try{ registerServiceWorker(); }catch(e){ console.warn('Service worker registration error:',e); }
   // Show UI after 800ms regardless of network state
   setTimeout(()=>{ revealAuthOrApp(); },800);
 }
