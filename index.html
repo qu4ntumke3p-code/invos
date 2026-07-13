@@ -472,6 +472,7 @@ input[type="file"].styled-file-input::file-selector-button{
           <button class="btn btn-mg" id="btn-add-item" onclick="openSheet('sh-add-item')">+ Add</button>
         </div>
         <div class="pill-row" id="cat-pills"></div>
+        <div class="pill-row" id="stockage-pills"></div>
         <div id="inv-list"></div>
       </div>
       <div id="inv-subtab-status" style="display:none;"></div>
@@ -640,6 +641,9 @@ input[type="file"].styled-file-input::file-selector-button{
       <div class="pill-row" id="ai-cat-pills" style="flex-wrap:wrap;overflow:visible;"></div>
     </div>
     <div id="ai-subcat-rows"></div>
+    <div class="form-row"><label class="form-lbl">Stock Age</label>
+      <div class="pill-row" id="ai-stockage-pills"></div>
+    </div>
     <div class="form-row"><label class="form-lbl">Emoji Icon</label><input class="field" id="ai-emoji" placeholder="e.g. 🔩" maxlength="4"></div>
     <div class="form-row"><label class="form-lbl">Total Quantity *</label><input class="field" id="ai-qty" type="number" min="1" value="1"></div>
     <div class="form-row"><label class="form-lbl">Low-stock alert at (qty)</label><input class="field" id="ai-low" type="number" min="0" value="2"></div>
@@ -659,6 +663,9 @@ input[type="file"].styled-file-input::file-selector-button{
       <div class="pill-row" id="ei-cat-pills" style="flex-wrap:wrap;overflow:visible;"></div>
     </div>
     <div id="ei-subcat-rows"></div>
+    <div class="form-row"><label class="form-lbl">Stock Age</label>
+      <div class="pill-row" id="ei-stockage-pills"></div>
+    </div>
     <div class="form-row"><label class="form-lbl">Emoji Icon</label><input class="field" id="ei-emoji" maxlength="4"></div>
     <div class="form-row"><label class="form-lbl">Total Quantity *</label><input class="field" id="ei-qty" type="number" min="0"></div>
     <div class="form-row"><label class="form-lbl">Low-stock alert at (qty)</label><input class="field" id="ei-low" type="number" min="0"></div>
@@ -1414,7 +1421,7 @@ function initDialogButtons(){} // no-op — native dialogs need no setup
 
 function openSheet(id){
   $(id).classList.add('open');
-  if(id==='sh-add-item'){ renderQuickAddPills(); loadCatPicker('ai',null); }
+  if(id==='sh-add-item'){ renderQuickAddPills(); loadCatPicker('ai',null); setStockAge('ai','new'); }
 }
 function closeSheet(id){
   $(id).classList.remove('open');
@@ -1863,6 +1870,7 @@ function roleLabel(r){ const m={master:'Master Dev',owner:'Owner',supervisor:'Su
 //  INVENTORY
 // ══════════════════════════════════════════════════════════════
 let invCat='All';
+let invStockAgeFilter='All';
 let invSubtab='items';
 function setInvSubtab(tab){
   invSubtab=tab;
@@ -1932,6 +1940,21 @@ function loadCatPicker(prefix,item){
   renderCatPicker(prefix);
 }
 
+// Stock Age — distinguishes existing/legacy inventory from newly purchased
+// items. Old items default to 'new' if the field is missing (back-compat).
+const stockAgeState={ai:'new',ei:'new'};
+function stockAgeOf(item){ return item.stockAge==='old'?'old':'new'; }
+function setStockAge(prefix,val){ stockAgeState[prefix]=val; renderStockAgePills(prefix); }
+function renderStockAgePills(prefix){
+  const wrap=$(prefix+'-stockage-pills'); if(!wrap)return;
+  wrap.innerHTML='';
+  [['new','🆕 New Stock'],['old','📦 Old Stock']].forEach(([val,label])=>{
+    const b=el('button','pill'+(stockAgeState[prefix]===val?' on':''),label);
+    b.onclick=()=>setStockAge(prefix,val);
+    wrap.appendChild(b);
+  });
+}
+
 function renderInv(){
   // Category pills
   const cp=$('cat-pills'); cp.innerHTML='';
@@ -1939,6 +1962,12 @@ function renderInv(){
     const b=el('button','pill'+(invCat===c?' on':''),c);
     b.onclick=()=>{ invCat=c; renderInv(); };
     cp.appendChild(b);
+  });
+  const sap=$('stockage-pills'); sap.innerHTML='';
+  [['All','All Stock'],['new','🆕 New Stock'],['old','📦 Old Stock']].forEach(([val,label])=>{
+    const b=el('button','pill'+(invStockAgeFilter===val?' on':''),label);
+    b.onclick=()=>{ invStockAgeFilter=val; renderInv(); };
+    sap.appendChild(b);
   });
   // Add button visibility
   $('btn-add-item').style.display=canManageInv()?'':'none';
@@ -1948,8 +1977,9 @@ function renderInv(){
   const inv=allOrgItems.filter(x=>{
     const xc=catsOf(x);
     const catMatch=invCat==='All'||xc.includes(invCat);
+    const ageMatch=invStockAgeFilter==='All'||stockAgeOf(x)===invStockAgeFilter;
     const searchBlob=(x.name+' '+xc.join(' ')+' '+xc.map(c=>subcatOf(x,c)).join(' ')).toLowerCase();
-    return catMatch&&searchBlob.includes(q);
+    return catMatch&&ageMatch&&searchBlob.includes(q);
   });
   const list=$('inv-list'); list.innerHTML='';
   if(!inv.length){
@@ -2051,6 +2081,7 @@ function itemCard(item){
         <div class="item-meta">${catsOf(item).map(c=>subcatOf(item,c)?`${c} — ${subcatOf(item,c)}`:c).join(', ')}${item.desc?' · '+item.desc:''}</div>
         <div class="item-chips">
           ${statusChip(item.status||'ok')}
+          <span class="chip ${stockAgeOf(item)==='old'?'chip-g':'chip-ok'}">${stockAgeOf(item)==='old'?'📦 Old Stock':'🆕 New Stock'}</span>
           ${isLow?'<span class="chip chip-wn">Low Stock</span>':''}
           <span class="chip chip-tl">${avail}/${item.qty} avail</span>
           ${item.checkedOut>0?`<span class="chip chip-mg">${item.checkedOut} out</span>`:''}
@@ -2143,7 +2174,7 @@ function addItem(){
   const qty=parseInt($('ai-qty').value)||1;
   const itemCats=[...state.cats];
   const itemSubcats={}; itemCats.forEach(c=>{ if(state.subcats[c]) itemSubcats[c]=state.subcats[c]; });
-  const item={id:'itm_'+uid(),name,cat:itemCats[0],cats:itemCats,subcats:itemSubcats,emoji:$('ai-emoji').value||'📦',qty,checkedOut:0,lowAt:parseInt($('ai-low').value)||2,status:'ok',desc:$('ai-desc').value.trim(),org:CU.org};
+  const item={id:'itm_'+uid(),name,cat:itemCats[0],cats:itemCats,subcats:itemSubcats,stockAge:stockAgeState.ai,emoji:$('ai-emoji').value||'📦',qty,checkedOut:0,lowAt:parseInt($('ai-low').value)||2,status:'ok',desc:$('ai-desc').value.trim(),org:CU.org};
   const inv=getInv(); inv.push(item); saveInv(inv);
   addLog('inv',`Added: ${name}`,`Qty: ${qty}, Cat: ${itemCats.join(', ')}`);
   toast('✅ Item added!'); closeSheet('sh-add-item');
@@ -2332,6 +2363,7 @@ async function handleInvFileUpload(e){
     const descCol=findColumn(keys,['description','desc','notes','note']);
     const emojiCol=findColumn(keys,['emoji','icon']);
     const subcatCol=findColumn(keys,['subcategory','sub category','subcat','sub-category','sub cat']);
+    const stockAgeCol=findColumn(keys,['stock age','old/new','old new','age','condition']);
 
     invUploadRows=raw.map(r=>({
       name:nameCol?r[nameCol]:'',
@@ -2340,7 +2372,8 @@ async function handleInvFileUpload(e){
       qty:qtyCol?(parseInt(r[qtyCol])||1):1,
       lowAt:lowCol?(parseInt(r[lowCol])||2):2,
       desc:descCol?r[descCol]:'',
-      emoji:emojiCol?r[emojiCol]:'📦'
+      emoji:emojiCol?r[emojiCol]:'📦',
+      stockAge:stockAgeCol&&/old/i.test(String(r[stockAgeCol]||''))?'old':'new'
     })).filter(r=>r.name);
 
     if(!invUploadRows.length){
@@ -2370,7 +2403,11 @@ function renderInvUploadPreview(){
           ${['Tools','PPE','Electronics','Audio','Video','Comms','Safety','Vehicles','Other'].map(c=>`<option ${row.cat===c?'selected':''}>${c}</option>`).join('')}
         </select>
         <input class="field" type="number" min="0" style="width:80px;" value="${row.qty}" oninput="invUploadRows[${i}].qty=parseInt(this.value)||0">
-      </div>`;
+      </div>
+      <select class="field mt-8" onchange="invUploadRows[${i}].stockAge=this.value">
+        <option value="new" ${(row.stockAge||'new')==='new'?'selected':''}>🆕 New Stock</option>
+        <option value="old" ${row.stockAge==='old'?'selected':''}>📦 Old Stock</option>
+      </select>`;
     const rb=el('button','btn btn-subtle btn-sm mt-8','Remove from import');
     rb.onclick=()=>{ invUploadRows.splice(i,1); renderInvUploadPreview(); };
     div.appendChild(rb);
@@ -2386,7 +2423,7 @@ function commitInvUpload(){
   if(!invUploadRows.length){toast('Nothing to import.');return;}
   const inv=getInv();
   invUploadRows.forEach(row=>{
-    inv.push({id:'itm_'+uid(),name:row.name,cat:row.cat,subcat:row.subcat||'',emoji:row.emoji||'📦',qty:row.qty||1,checkedOut:0,lowAt:row.lowAt||2,status:'ok',desc:row.desc||'',org:CU.org});
+    inv.push({id:'itm_'+uid(),name:row.name,cat:row.cat,subcat:row.subcat||'',stockAge:row.stockAge||'new',emoji:row.emoji||'📦',qty:row.qty||1,checkedOut:0,lowAt:row.lowAt||2,status:'ok',desc:row.desc||'',org:CU.org});
   });
   saveInv(inv);
   addLog('inv',`Imported ${invUploadRows.length} item(s) from file`,`By ${CU.firstname||CU.username}`);
@@ -2401,6 +2438,7 @@ function openEditItem(id){
   $('ei-id').value=id; $('ei-name').value=item.name;
   $('ei-emoji').value=item.emoji||''; $('ei-qty').value=item.qty; $('ei-low').value=item.lowAt||2; $('ei-desc').value=item.desc||'';
   loadCatPicker('ei',item);
+  setStockAge('ei',stockAgeOf(item));
   openSheet('sh-edit-item');
 }
 function saveEditItem(){
@@ -2409,7 +2447,7 @@ function saveEditItem(){
   if(!state.cats.size){toast('Pick at least one category.');return;}
   const itemCats=[...state.cats];
   const itemSubcats={}; itemCats.forEach(c=>{ if(state.subcats[c]) itemSubcats[c]=state.subcats[c]; });
-  inv[i]={...inv[i],name:$('ei-name').value.trim(),cat:itemCats[0],cats:itemCats,subcats:itemSubcats,subcat:undefined,emoji:$('ei-emoji').value||'📦',qty:parseInt($('ei-qty').value)||0,lowAt:parseInt($('ei-low').value)||2,desc:$('ei-desc').value.trim()};
+  inv[i]={...inv[i],name:$('ei-name').value.trim(),cat:itemCats[0],cats:itemCats,subcats:itemSubcats,subcat:undefined,stockAge:stockAgeState.ei,emoji:$('ei-emoji').value||'📦',qty:parseInt($('ei-qty').value)||0,lowAt:parseInt($('ei-low').value)||2,desc:$('ei-desc').value.trim()};
   saveInv(inv); addLog('inv',`Edited: ${inv[i].name}`,'Item details updated.'); toast('✅ Saved!'); closeSheet('sh-edit-item'); renderInv(); renderDashboard();
 }
 function deleteItem(){
