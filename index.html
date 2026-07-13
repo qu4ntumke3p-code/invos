@@ -228,6 +228,18 @@ select.field{appearance:auto;cursor:pointer;}
 .msg-time{font-size:9px;color:var(--g400);margin-top:3px;}
 .msg-row.mine .msg-time{text-align:right;}
 .chat-input-row{display:flex;gap:8px;align-items:center;padding-top:10px;border-top:1.5px solid var(--g200);}
+.msg-mention{background:rgba(13,148,136,.16);color:var(--tealD);border-radius:4px;padding:0 3px;font-weight:700;}
+.msg-actions{display:flex;gap:6px;margin-top:3px;}
+.msg-action-btn{font-size:11px;color:var(--g400);cursor:pointer;background:none;border:none;padding:0;font-family:var(--font);}
+.msg-reactions{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;}
+.reaction-chip{display:inline-flex;align-items:center;gap:3px;background:var(--g100);border:1px solid var(--g200);border-radius:99px;padding:1px 7px;font-size:11px;cursor:pointer;}
+.reaction-chip.mine{background:var(--tealBg);border-color:var(--tealMid);}
+.reaction-picker{display:flex;gap:6px;background:#fff;border:1.5px solid var(--g200);border-radius:99px;padding:5px 8px;box-shadow:0 4px 14px rgba(0,0,0,.12);position:absolute;z-index:50;}
+.reaction-picker span{cursor:pointer;font-size:16px;}
+.chat-img-bubble{max-width:200px;border-radius:12px;margin-top:4px;display:block;cursor:pointer;}
+.chat-attach-thumb{position:relative;display:inline-block;}
+.chat-attach-thumb img{max-height:70px;border-radius:8px;}
+.chat-attach-remove{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--err);color:#fff;border:none;font-size:11px;cursor:pointer;}
 .chat-input{flex:1;border:1.5px solid var(--g200);border-radius:99px;padding:10px 16px;font-size:14px;font-family:var(--font);outline:none;background:var(--g50);resize:none;}
 .chat-input:focus{border-color:var(--teal);}
 .chat-send{width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,var(--teal),var(--tealD));border:none;color:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
@@ -529,8 +541,12 @@ input[type="file"].styled-file-input::file-selector-button{
           </div>
         </div>
         <div class="chat-msgs" id="chat-msgs" style="flex:1;"></div>
+        <div id="chat-typing-indicator" class="text-xs text-muted" style="min-height:16px;padding:2px 4px;"></div>
+        <div id="chat-attach-preview" style="display:none;padding:6px 0;"></div>
         <div class="chat-input-row">
-          <input class="chat-input" id="chat-in" placeholder="Message…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}">
+          <input type="file" id="chat-img-inp" accept="image/*" style="display:none;" onchange="handleChatImageSelect(event)">
+          <button class="btn btn-subtle" onclick="document.getElementById('chat-img-inp').click()" style="flex-shrink:0;padding:0;width:40px;height:40px;border-radius:50%;">📎</button>
+          <input class="chat-input" id="chat-in" placeholder="Message… (@name to mention)" oninput="handleChatTyping()" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}">
           <button class="chat-send" onclick="sendChat()">➤</button>
         </div>
       </div>
@@ -1217,6 +1233,8 @@ function saveTempStaff(v){ sbSave('iq_temp_staff',v); }
 function getJobLogs(){ return LS.get('iq_job_logs')||{}; }
 function saveJobLogs(v){ sbSave('iq_job_logs',v); }
 function getChat(){ return LS.get('iq_chat')||[]; }
+function getTypingState(){ return LS.get('iq_typing')||{}; }
+function saveTypingState(v){ sbSave('iq_typing',v); }
 function saveChat(v){ sbSave('iq_chat',v); }
 
 function getUserLedger(userId){ const l=getLedger(); return l[userId]||{otMinutes:0,owedDays:0,history:[]}; }
@@ -1601,6 +1619,19 @@ function startChatSync(){
         updateBadges();
       }
     }catch(e){}
+    // Typing indicator — lightweight poll, only matters while a thread's open
+    if(curPage==='chat'&&activeThreadId){
+      try{
+        const tResp=await fetch(
+          `${SB_REST}?org=eq.${encodeURIComponent(CU.org)}&key=eq.iq_typing&select=data`,
+          {headers:{'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY}}
+        );
+        if(tResp.ok){
+          const tRows=await tResp.json();
+          if(Array.isArray(tRows)&&tRows.length){ LS.set('iq_typing',tRows[0].data); checkTypingIndicator(); }
+        }
+      }catch(e){}
+    }
   },5000);
   startPeriodicSync();
 }
@@ -4105,13 +4136,20 @@ function renderThreadList(){
   const allMsgs=getChat();
   const orgUsers=getUsers().filter(u=>u.org===CU?.org&&u.id!==CU.id);
 
+  const previewOf=m=>{
+    if(!m) return '';
+    if(m.deleted) return 'Message deleted';
+    if(!m.text&&m.imageData) return '📷 Image';
+    return m.text;
+  };
+
   // Team channel row
   const teamMsgs=allMsgs.filter(m=>m.threadId==='team');
   const lastTeam=teamMsgs[teamMsgs.length-1];
   const teamUnread=teamMsgs.filter(m=>m.userId!==CU.id&&!(m.readBy||[]).includes(CU.id)).length;
   wrap.appendChild(threadRow({
     id:'team', name:'Team Chat', isTeam:true,
-    preview:lastTeam?`${lastTeam.userId===CU.id?'You: ':(getUsers().find(u=>u.id===lastTeam.userId)?.firstname||'')+': '}${lastTeam.text}`:'No messages yet',
+    preview:lastTeam?`${lastTeam.userId===CU.id?'You: ':(getUsers().find(u=>u.id===lastTeam.userId)?.firstname||'')+': '}${previewOf(lastTeam)}`:'No messages yet',
     time:lastTeam?elapsed(lastTeam.ts):'', unread:teamUnread
   }));
 
@@ -4123,7 +4161,7 @@ function renderThreadList(){
     const unread=msgs.filter(m=>m.userId!==CU.id&&!(m.readBy||[]).includes(CU.id)).length;
     wrap.appendChild(threadRow({
       id:tid, name:`${u.firstname||u.username} ${u.lastname||''}`.trim(), user:u,
-      preview:last?`${last.userId===CU.id?'You: ':''}${last.text}`:'Tap to start a conversation',
+      preview:last?`${last.userId===CU.id?'You: ':''}${previewOf(last)}`:'Tap to start a conversation',
       time:last?elapsed(last.ts):'', unread
     }));
   });
@@ -4149,6 +4187,8 @@ function threadRow(t){
 
 function openChatThread(threadId,name,isTeam,user){
   activeThreadId=threadId;
+  clearChatAttach();
+  openReactionPickerMsgId=null;
   $('chat-list-view').style.display='none';
   $('chat-thread-view').style.display='flex';
   $('chat-thread-title').textContent=name;
@@ -4177,9 +4217,101 @@ function closeChatThread(){
   updateBadges();
 }
 
+// ══════════════════════════════════════════════════════════════
+//  CHAT UPGRADES — attachments, reactions, edit/delete, @mentions,
+//  typing indicators. Reuses the existing polling sync (5s interval)
+//  rather than adding new infrastructure.
+// ══════════════════════════════════════════════════════════════
+const REACTION_EMOJIS=['👍','❤️','😂','🎉','😮','😢'];
+let chatPendingImage=null;
+let openReactionPickerMsgId=null;
+let chatTypingTimer=null;
+
+function handleChatImageSelect(e){
+  const f=e.target.files[0]; if(!f)return;
+  const r=new FileReader();
+  r.onload=ev=>{ chatPendingImage=ev.target.result; renderChatAttachPreview(); };
+  r.readAsDataURL(f);
+}
+function clearChatAttach(){ chatPendingImage=null; $('chat-img-inp').value=''; renderChatAttachPreview(); }
+function renderChatAttachPreview(){
+  const wrap=$('chat-attach-preview');
+  if(!chatPendingImage){ wrap.style.display='none'; wrap.innerHTML=''; return; }
+  wrap.style.display='';
+  wrap.innerHTML=`<div class="chat-attach-thumb"><img src="${chatPendingImage}"><button class="chat-attach-remove" onclick="clearChatAttach()">✕</button></div>`;
+}
+
+// Parses @Name mentions against real org members — matches first name or
+// username, case-insensitive. Returns {userIds, htmlText} where htmlText
+// has each valid mention wrapped for highlighting.
+function parseMentions(text,orgUsers){
+  const userIds=[];
+  const htmlText=escapeHtml(text).replace(/@(\w+)/g,(match,name)=>{
+    const u=orgUsers.find(x=>(x.firstname||x.username||'').toLowerCase()===name.toLowerCase()||(x.username||'').toLowerCase()===name.toLowerCase());
+    if(u){ if(!userIds.includes(u.id)) userIds.push(u.id); return `<span class="msg-mention">@${escapeHtml(u.firstname||u.username)}</span>`; }
+    return match;
+  });
+  return {userIds,htmlText};
+}
+function escapeHtml(s){ return String(s).replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function toggleReaction(msgId,emoji){
+  const chat=getChat(); const i=chat.findIndex(m=>m.id===msgId); if(i<0)return;
+  if(!chat[i].reactions) chat[i].reactions={};
+  if(!chat[i].reactions[emoji]) chat[i].reactions[emoji]=[];
+  const idx=chat[i].reactions[emoji].indexOf(CU.id);
+  if(idx>=0) chat[i].reactions[emoji].splice(idx,1);
+  else chat[i].reactions[emoji].push(CU.id);
+  if(!chat[i].reactions[emoji].length) delete chat[i].reactions[emoji];
+  saveChat(chat);
+  openReactionPickerMsgId=null;
+  renderThreadMessages();
+}
+function toggleReactionPicker(msgId){
+  openReactionPickerMsgId=openReactionPickerMsgId===msgId?null:msgId;
+  renderThreadMessages();
+}
+
+async function editChatMessage(msgId){
+  const chat=getChat(); const msg=chat.find(m=>m.id===msgId); if(!msg||msg.deleted)return;
+  const newText=await iqPrompt('Edit message:',msg.text,'Edit Message');
+  if(newText===null||!newText.trim())return;
+  msg.text=newText.trim(); msg.edited=true; msg.editedAt=ts();
+  saveChat(chat); renderThreadMessages();
+}
+async function deleteChatMessage(msgId){
+  const ok=await iqConfirm('Delete this message? This can\'t be undone.','Delete Message');
+  if(!ok)return;
+  const chat=getChat(); const msg=chat.find(m=>m.id===msgId); if(!msg)return;
+  msg.deleted=true; msg.text=''; msg.imageData='';
+  saveChat(chat); renderThreadMessages();
+}
+
+// Debounced typing broadcast — only pushes at most once every ~2s while
+// actively typing, and readers treat entries older than 5s as stale.
+function handleChatTyping(){
+  if(!activeThreadId||!CU) return;
+  clearTimeout(chatTypingTimer);
+  chatTypingTimer=setTimeout(()=>{
+    const state=getTypingState();
+    if(!state[activeThreadId]) state[activeThreadId]=[];
+    state[activeThreadId]=state[activeThreadId].filter(t=>t.userId!==CU.id);
+    state[activeThreadId].push({userId:CU.id,name:CU.firstname||CU.username,ts:ts()});
+    saveTypingState(state);
+  },300);
+}
+function checkTypingIndicator(){
+  const el2=$('chat-typing-indicator'); if(!el2)return;
+  if(!activeThreadId){ el2.textContent=''; return; }
+  const state=getTypingState();
+  const entries=(state[activeThreadId]||[]).filter(t=>t.userId!==CU.id&&(ts()-t.ts)<5000);
+  el2.textContent=entries.length?`${entries.map(e=>e.name).join(', ')} ${entries.length>1?'are':'is'} typing…`:'';
+}
+
 function renderThreadMessages(){
   if(!activeThreadId) return;
   const msgs=getChat().filter(m=>m.threadId===activeThreadId);
+  const orgUsers=getUsers().filter(u=>u.org===CU?.org);
   const container=$('chat-msgs'); container.innerHTML='';
   msgs.forEach(m=>{
     const isMine=m.userId===CU.id;
@@ -4189,32 +4321,93 @@ function renderThreadMessages(){
     const avDiv=el('div','msg-av',u.photo?`<img src="${u.photo}">`:(u.firstname?.[0]||u.username?.[0]||'?').toUpperCase());
     avDiv.style.background=u.photo?'transparent':color;
     const bubble=el('div','');
+    bubble.style.position='relative';
     if(!isMine&&activeThreadId==='team') bubble.innerHTML=`<div class="msg-sender">${u.firstname||u.username}</div>`;
-    const bub=el('div','msg-bubble '+(isMine?'mine':'them'),m.text.replace(/</g,'&lt;'));
+
+    const bub=el('div','msg-bubble '+(isMine?'mine':'them'));
+    if(m.deleted){
+      bub.innerHTML=`<em style="opacity:.65;">Message deleted</em>`;
+    } else {
+      const {htmlText}=parseMentions(m.text,orgUsers);
+      bub.innerHTML=htmlText+(m.edited?' <span style="opacity:.6;font-size:10px;">(edited)</span>':'');
+      if(m.imageData){
+        const img=el('img','chat-img-bubble'); img.src=m.imageData;
+        img.onclick=()=>window.open(m.imageData,'_blank');
+        bub.appendChild(img);
+      }
+    }
+    bubble.appendChild(bub);
+
+    // Reactions
+    const reactionKeys=m.reactions?Object.keys(m.reactions).filter(k=>m.reactions[k]&&m.reactions[k].length):[];
+    if(reactionKeys.length){
+      const rWrap=el('div','msg-reactions');
+      reactionKeys.forEach(emoji=>{
+        const mine=m.reactions[emoji].includes(CU.id);
+        const chip=el('div','reaction-chip'+(mine?' mine':''),`${emoji} ${m.reactions[emoji].length}`);
+        chip.onclick=()=>toggleReaction(m.id,emoji);
+        rWrap.appendChild(chip);
+      });
+      bubble.appendChild(rWrap);
+    }
+
     const t=el('div','msg-time',elapsed(m.ts));
-    bubble.appendChild(bub); bubble.appendChild(t);
+    bubble.appendChild(t);
+
+    // Actions row: react, plus edit/delete for own messages
+    if(!m.deleted){
+      const actions=el('div','msg-actions');
+      const reactBtn=el('button','msg-action-btn','😀 React');
+      reactBtn.onclick=()=>toggleReactionPicker(m.id);
+      actions.appendChild(reactBtn);
+      if(isMine){
+        const editBtn=el('button','msg-action-btn','✏️ Edit'); editBtn.onclick=()=>editChatMessage(m.id); actions.appendChild(editBtn);
+        const delBtn=el('button','msg-action-btn','🗑 Delete'); delBtn.onclick=()=>deleteChatMessage(m.id); actions.appendChild(delBtn);
+      }
+      bubble.appendChild(actions);
+      if(openReactionPickerMsgId===m.id){
+        const picker=el('div','reaction-picker');
+        REACTION_EMOJIS.forEach(em=>{
+          const span=document.createElement('span'); span.textContent=em;
+          span.onclick=()=>toggleReaction(m.id,em);
+          picker.appendChild(span);
+        });
+        bubble.appendChild(picker);
+      }
+    }
+
     if(isMine){row.appendChild(bubble);row.appendChild(avDiv);}
     else{row.appendChild(avDiv);row.appendChild(bubble);}
     container.appendChild(row);
   });
   container.scrollTop=container.scrollHeight;
+  checkTypingIndicator();
 }
 
 function sendChat(){
   if(!activeThreadId)return;
-  const inp=$('chat-in'); const text=inp.value.trim(); if(!text)return;
-  const msg={id:uid(),threadId:activeThreadId,userId:CU.id,username:CU.username,name:CU.firstname||CU.username,text,ts:ts(),photo:CU.photo||'',readBy:[CU.id]};
+  const inp=$('chat-in'); const text=inp.value.trim();
+  if(!text&&!chatPendingImage)return;
+  const orgUsers=getUsers().filter(u=>u.org===CU?.org);
+  const {userIds:mentionedIds}=parseMentions(text,orgUsers);
+  const msg={id:uid(),threadId:activeThreadId,userId:CU.id,username:CU.username,name:CU.firstname||CU.username,text,ts:ts(),photo:CU.photo||'',readBy:[CU.id],imageData:chatPendingImage||'',reactions:{},mentions:mentionedIds};
   const chat=getChat(); chat.push(msg); saveChat(chat);
-  inp.value=''; renderThreadMessages(); updateBadges();
+  inp.value=''; clearChatAttach(); renderThreadMessages(); updateBadges();
 
   const senderName=CU.firstname||CU.username;
-  const preview=text.length>80?text.slice(0,80)+'…':text;
+  const preview=(text||'📷 Image').length>80?text.slice(0,80)+'…':(text||'📷 Image');
   if(activeThreadId==='team'){
     sendPushNotification({org:CU.org,title:`💬 ${senderName} (Team Chat)`,body:preview,tag:'invos-chat-team',excludeUserId:CU.id});
   } else {
     const otherUser=getUsers().find(u=>u.org===CU.org&&u.id!==CU.id&&dmThreadId(CU.id,u.id)===activeThreadId);
     if(otherUser) sendPushNotification({org:CU.org,title:`💬 ${senderName}`,body:preview,tag:'invos-chat-'+activeThreadId,targetUserId:otherUser.id});
   }
+  // @mentions get their own targeted priority alert + push, on top of the normal message notification
+  mentionedIds.filter(id=>id!==CU.id).forEach(uid2=>{
+    addAlert('assignment',`💬 ${senderName} mentioned you`,preview,null,true);
+    sendPushNotification({org:CU.org,title:`💬 ${senderName} mentioned you`,body:preview,urgent:true,tag:'invos-mention-'+uid2,targetUserId:uid2});
+  });
+  if(mentionedIds.length) updateBadges();
 }
 
 // Total unread across all threads (team channel + my DMs), used for the nav badge
